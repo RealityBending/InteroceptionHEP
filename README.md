@@ -10,6 +10,7 @@ General:
 - shift in perceptual sensitivity depending on cardiac cycle (stimuli loaclised less frquently during systole)(Al, et al., 2020) "This perceptual attenuation was accompanied by the suppression of only late SEP components (P300) and was stronger for individuals with a more stable heart rate."
 - HEP might reflect shifts between intero- and exteroception, or general shifts in attention
 - Cardiac cycle influences sense of agency (Herman, & Taskiris, 2020)
+-	higher interoceptive accuracy was negatively correlated with timing control in tapping task, in the slow tempo condition only (Tomyta, et al., 2022)
 
 
 Depression and emotions: 
