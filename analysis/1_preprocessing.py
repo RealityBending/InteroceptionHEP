@@ -11,15 +11,17 @@ import pandas as pd
 import PIL
 import pyllusion as ill
 import scipy.stats
-import urllib.request
+import requests
 
 mne.set_log_level(verbose="WARNING")
 
 # Convenience functions ======================================================================
-r = urllib.request.urlopen(
-    "https://raw.githubusercontent.com/RealityBending/PrimalsInteroception/main/analysis/0_clean_physio.py"
-).read()
-eval(compile(r.decode(), "<string>", "single"))
+# Download the load_physio() function
+exec(
+    requests.get(
+        "https://raw.githubusercontent.com/RealityBending/PrimalsInteroception/main/analysis/func_load_physio.py"
+    ).text
+)
 
 
 def qc_eeg(raw, sub, plots=[]):
@@ -56,8 +58,8 @@ def analyze_hep(raw, events):
     epochs = mne.Epochs(
         raw,
         events,
-        tmin=-0.3,
-        tmax=0.7,
+        tmin=-0.40,
+        tmax=0.80,
         detrend=None,
         decim=20,  # Downsample to 100 Hz
         verbose=False,
@@ -75,8 +77,8 @@ def analyze_hep(raw, events):
         ar = autoreject.AutoReject(verbose=False, picks="eeg")
         epochs = ar.fit_transform(original_epochs)
         out["autoreject_log"] = ar.get_reject_log(original_epochs.copy().pick("eeg"))
-        # reject_log.plot("horizontal", aspect="auto")
-        # p2 = reject_log.plot_epochs(original_epochs.copy().pick("eeg"))
+        # out["autoreject_log"].plot("horizontal", aspect="auto")
+        # p2 = out["autoreject_log"].plot_epochs(original_epochs.copy().pick("eeg"))
     except IndexError:
         out["autoreject_log"] = None
 
@@ -107,7 +109,9 @@ def analyze_hep(raw, events):
     #     rez[f"HEP_Amplitude_400_600_{ch}"] = hep2[ch].mean()
 
     # Compute Time-frequency Power
-    freqs = np.logspace(*np.log10([3, 30]), num=20)  # freqs of interest (log-spaced)
+    # "We set the frequency range at 1 Hz intervals from 5 Hz to 20 Hz, excluding frequencies below 5 Hz to reduce the influence of
+    # slow-varying artifacts, aligning with approaches used in previous studies (Park et al., 2018, Kern et al., 2013)" (Lee et al., 2024)
+    freqs = np.logspace(*np.log10([5, 30]), num=20)  # freqs of interest (log-spaced)
     n_cycles = freqs / 2.0  # different number of cycle per frequency
     power, itc = mne.time_frequency.tfr_morlet(
         epochs,
@@ -178,8 +182,8 @@ def qc_heo(power, itc, sub, plots=[]):
 # Variables ==================================================================================
 # Change the path to your local data folder.
 # The data can be downloaded from OpenNeuro (TODO).
-path = "C:/Users/domma/Box/Data/PrimalsInteroception/Reality Bending Lab - PrimalsInteroception/"
-# path = "C:/Users/dmm56/Box/Data/PrimalsInteroception/Reality Bending Lab - PrimalsInteroception/"
+path = "C:/Users/domma/Box/Data/InteroceptionPrimals/Reality Bending Lab - InteroceptionPrimals/"
+# path = "C:/Users/dmm56/Box/Data/InteroceptionPrimals/Reality Bending Lab - InteroceptionPrimals/"
 
 # Get participant list
 meta = pd.read_csv(path + "participants.tsv", sep="\t")
@@ -197,10 +201,13 @@ qc = {
 
 # sub = "sub-19"
 # Loop through participants ==================================================================
-for sub in meta["participant_id"].values:
+for sub in meta["participant_id"].values[0::]:
     # Print progress and comments
     print(sub)
     print("  * " + meta[meta["participant_id"] == sub]["Comments"].values[0])
+
+    if sub in ["sub-86"]:
+        continue
 
     # Load data
     rs, hct = load_physio(path, sub)  # Function loaded from script at URL
@@ -212,7 +219,7 @@ for sub in meta["participant_id"].values:
 
     rs, _ = mne.set_eeg_reference(rs, ["TP9", "TP10"])
     rs = rs.notch_filter(np.arange(50, 251, 50), picks="eeg")
-    rs = rs.filter(1, 30, picks="eeg")
+    rs = rs.filter(1, 40, picks="eeg")
 
     # QC
     qc["rs_eeg"] = qc_eeg(rs, sub, plots=qc["rs_eeg"])
@@ -248,7 +255,7 @@ for sub in meta["participant_id"].values:
 
     hct, _ = mne.set_eeg_reference(hct, ["TP9", "TP10"])
     hct = hct.notch_filter(np.arange(50, 251, 50), picks="eeg")
-    hct = hct.filter(1, 30, picks="eeg")
+    hct = hct.filter(1, 40, picks="eeg")
 
     # QC
     qc["hct_eeg"] = qc_eeg(hct, sub, plots=qc["hct_eeg"])
@@ -289,19 +296,19 @@ for sub in meta["participant_id"].values:
 
 
 # Clean up and Save data
-for i in range(5):
+for i in range(11):
     df[df["Participant"].str.contains(f"sub-{i}[1-9]")].to_csv(
         f"../data/data_hep{i+1}.csv", index=False
     )
 
 
 # Save figures
-ill.image_mosaic(qc["rs_eeg"], ncols=4, nrows="auto").save("signals/rs_eeg.png")
-ill.image_mosaic(qc["rs_hep"], ncols=4, nrows="auto").save("signals/rs_hep.png")
-ill.image_mosaic(qc["rs_heo"], ncols=4, nrows="auto").save("signals/rs_heo.png")
-ill.image_mosaic(qc["hct_eeg"], ncols=4, nrows="auto").save("signals/hct_eeg.png")
-ill.image_mosaic(qc["hct_hep"], ncols=4, nrows="auto").save("signals/hct_hep.png")
-ill.image_mosaic(qc["hct_heo"], ncols=4, nrows="auto").save("signals/hct_heo.png")
+ill.image_mosaic(qc["rs_eeg"], ncols=6, nrows="auto").save("signals/rs_eeg.png")
+ill.image_mosaic(qc["rs_hep"], ncols=6, nrows="auto").save("signals/rs_hep.png")
+ill.image_mosaic(qc["rs_heo"], ncols=6, nrows="auto").save("signals/rs_heo.png")
+ill.image_mosaic(qc["hct_eeg"], ncols=6, nrows="auto").save("signals/hct_eeg.png")
+ill.image_mosaic(qc["hct_hep"], ncols=6, nrows="auto").save("signals/hct_hep.png")
+ill.image_mosaic(qc["hct_heo"], ncols=6, nrows="auto").save("signals/hct_heo.png")
 
 
 print("Done!")

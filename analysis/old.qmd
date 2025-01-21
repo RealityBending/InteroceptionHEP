@@ -1,0 +1,641 @@
+---
+title: "Analysis"
+editor: source
+editor_options: 
+  chunk_output_type: console
+format:
+  html:
+    code-fold: true
+    self-contained: false
+---
+
+## Data Preparation
+
+```{r}
+#| message: false
+#| warning: false
+
+library(tidyverse)
+library(easystats)
+library(patchwork)
+library(ggside)
+library(dtwclust)
+```
+
+
+```{r}
+#| code-fold: false
+
+df <- rbind(
+  read.csv("../data/data_hep1.csv"),
+  read.csv("../data/data_hep2.csv"),
+  read.csv("../data/data_hep3.csv"),
+  read.csv("../data/data_hep4.csv"),
+  read.csv("../data/data_hep5.csv"),
+  read.csv("../data/data_hep6.csv"),
+  read.csv("../data/data_hep7.csv"),
+  read.csv("../data/data_hep8.csv"),
+  read.csv("../data/data_hep9.csv"),
+  read.csv("../data/data_hep10.csv"),
+  read.csv("../data/data_hep11.csv")) |>
+  mutate(AF7 = as.numeric(standardize(AF7)),
+         AF8 = as.numeric(standardize(AF8)),
+         .by = c("Participant", "Condition", "epoch")) 
+
+df |>  
+  summarize(n = length(unique(epoch)), .by=c("Participant", "Condition")) |> 
+  gt::gt() |> 
+  gt::opt_interactive()
+
+ecg <- summarize(df, ECG = median(ECG), RSP = median(RSP), .by="time") |> 
+  mutate(ECG = standardize(ECG))
+```
+
+
+## Exclusion
+
+```{r}
+#| code-fold: false
+
+exclude <- c("sub-06", "sub-76", "sub-94")
+```
+
+
+```{r}
+#| fig-width: 12
+#| fig-height: 14
+
+dat <- df |>  
+  summarize(ggdist::mean_qi(AF7, .width=0.2), .by=c("Participant", "Condition", "time")) |>
+  mutate(Sensor = "AF7") |> 
+  rbind(
+    df |>  
+      summarize(ggdist::mean_qi(AF8, .width=0.2), .by=c("Participant", "Condition", "time")) |>
+      mutate(Sensor = "AF8")
+  )
+
+dat_rect <- summarize(dat, ymin = min(y), ymax = max(y), .by=c("Participant")) |> 
+  mutate(Exclude = case_when(Participant %in% exclude ~ TRUE, .default = FALSE))
+
+dat |>
+  mutate(color = paste0(Condition, "_", Sensor)) |> 
+  ggplot() +
+  geom_vline(xintercept=0) +
+  geom_vline(xintercept=c(-0.14, 0.1), color="grey") +
+  geom_line(aes(x=time, y=y, color=color)) +
+  geom_rect(data=dat_rect, aes(xmin=-0.3, xmax=0.8, ymin=ymin, ymax=ymax, color=Exclude), alpha=0, show.legend = FALSE) +
+  scale_color_manual(values=c("RestingState_AF7"="dodgerblue", "RestingState_AF8"="darkblue", 
+                              "HCT_AF7"="red", "HCT_AF8"="darkred", "TRUE"="red", "FALSE"="white"),
+                     breaks=c("RestingState", "HCT")) +
+  # geom_line(aes(color=Condition, group=epoch)) +
+  facet_wrap(~Participant, scales="free_y", ncol=7) +
+  theme_minimal() +
+  theme(axis.text.y = element_blank(),
+        axis.title.y = element_blank())
+```
+
+
+```{r}
+#| code-fold: false
+
+df <- df |> 
+  mutate(Exclude = case_when(
+    Participant %in% exclude ~ TRUE,
+    .default = FALSE
+  )) |> 
+  filter(Exclude == FALSE) |> 
+  select(-Exclude) 
+```
+
+
+## Participant-Level Clustering
+
+### Naive Averaging
+
+
+```{r}
+dfav <- df |>
+  summarize(ggdist::mean_qi(AF7, .width=0.2), .by=c("Condition", "time")) |>
+  mutate(Sensor = "AF7") |>
+  rbind(
+    df |>
+      summarize(ggdist::mean_qi(AF8, .width=0.2), .by=c("Condition", "time")) |>
+      mutate(Sensor = "AF8")
+  )
+
+
+dfav |>
+  ggplot(aes(x=time)) +
+  geom_vline(xintercept=0) +
+  geom_rect(aes(xmin=-0.17, xmax=-0.1, ymin=-Inf, ymax=Inf), fill="#FFEBEE", alpha=0.1) +
+  geom_rect(aes(xmin=0.025, xmax=0.125, ymin=-Inf, ymax=Inf), fill="#FFEBEE", alpha=0.1) +
+  geom_rect(aes(xmin=0.125, xmax=0.325, ymin=-Inf, ymax=Inf), fill="#FFF3E0", alpha=0.1) +
+  geom_rect(aes(xmin=0.50, xmax=0.7, ymin=-Inf, ymax=Inf), fill="#FFF3E0", alpha=0.1) +
+  geom_vline(xintercept=c(-0.15, 0.08, 0.23), color="grey") +
+  # geom_ribbon(aes(ymin=ymin, ymax=ymax, fill=Condition, linetype=Sensor), alpha=1/6) +
+  geom_line(aes(x=time, y=y, color=Condition),linewidth=1) +
+  scale_color_manual(values=c("RestingState"="dodgerblue", "HCT"="red")) +
+  # scale_linetype_manual(values=c("AF7"="dotted", "AF8"="solid")) +
+  theme_minimal() +
+  theme(axis.text.y = element_blank(),
+        axis.title.y = element_blank()) +
+  facet_wrap(~Sensor)
+```
+
+### DTW Averaging
+
+
+```{r}
+# for(sub in unique(df$Participant)) {
+#   for(cond in unique(df$Condition)) {
+#     af7ref <- dfav[dfav$Sensor=="AF7" & dfav$Condition==cond, "y"]
+#     af8ref <- dfav[dfav$Sensor=="AF8" & dfav$Condition==cond, "y"]
+#     dat <- df[df$Participant==sub & df$Condition==cond, ] |> 
+#       summarize(AF7 = mean(AF7), AF8 = mean(AF8), .by="time")
+#     warp <- dtw::dtw(dat$AF7, af7ref, window.type="none", step.pattern=mori2006) |> 
+#       dtw::warp()
+#     
+#     plot(dat$AF7[warp], type="l") 
+#     lines(dat$AF7, col="red") 
+#     lines(af7ref, col="blue") 
+#     
+#   }
+# }
+# 
+# 
+# idx<-seq(0,6.28,len=100);
+# query<-sin(idx)+runif(100)/10;
+# reference<-cos(idx)
+# 
+# alignment<-dtw(query,reference);
+# 
+# 
+# wq<-warp(alignment,index.reference=FALSE);
+# wt<-warp(alignment,index.reference=TRUE);
+# 
+# old.par <- par(no.readonly = TRUE);
+# par(mfrow=c(2,1));
+# 
+# plot(reference,main="Warping query");
+#   lines(query[wq],col="blue");
+# 
+# plot(query,type="l",col="blue",
+#   main="Warping reference");
+#   points(reference[wt]);
+# 
+# par(old.par)
+```
+
+<!-- ### Clustering -->
+
+<!-- #### Model Selection -->
+
+<!-- ```{r} -->
+<!-- #| fig-width: 12 -->
+<!-- #| fig-height: 12 -->
+
+<!-- make_clusters <- function(df, sensor="AF8", condition="RestingState") { -->
+
+<!--   # Format data -->
+<!--   df$Sensor <- df[[sensor]] -->
+<!--   data <- df |>  -->
+<!--     filter(Condition == condition) |> -->
+<!--     summarize(Sensor = mean(Sensor), .by=c("Participant",  "time")) |> -->
+<!--     pivot_wider(names_from = c("Participant"), values_from = "Sensor") |>  -->
+<!--     select(-time) |>  -->
+<!--     as.list()  -->
+
+<!--   # Configs -->
+<!--   cfgs <- dtwclust::compare_clusterings_configs(types = c("p", "h"), k = 2:4) -->
+<!--   vi_evaluators <- dtwclust::cvi_evaluators(type = "valid") -->
+<!--   score_fun <- vi_evaluators$score -->
+<!--   pick_fun <- vi_evaluators$pick -->
+
+<!--   # Compare -->
+<!--   comp <- dtwclust::compare_clusterings(data, types=c("p", "h"), configs=cfgs, -->
+<!--                                         return.objects = TRUE, -->
+<!--                                         score.clus = score_fun, pick.clus = pick_fun) -->
+
+<!--   # Model selection -->
+<!--   data_fit <- data.frame() -->
+<!--   for(type in names(comp$scores)) { -->
+<!--     data_fit <- mutate(as.data.frame(comp$scores[[type]]),  -->
+<!--                   k=2:(n()+1)) |>  -->
+<!--       pivot_longer(cols=-c(k), names_to="Index", values_to="score") |>  -->
+<!--       mutate(Algorithm=type, Sensor=sensor, Condition=condition) |> -->
+<!--       rbind(data_fit) -->
+<!--   } -->
+
+<!--   list(fit=data_fit, out=comp, data=data) -->
+<!-- } -->
+
+<!-- af8rs <- make_clusters(df, sensor="AF8", condition="RestingState") -->
+<!-- af8hct <- make_clusters(df, sensor="AF8", condition="HCT") -->
+<!-- af7rs <- make_clusters(df, sensor="AF7", condition="RestingState") -->
+<!-- af7hct <- make_clusters(df, sensor="AF7", condition="HCT") -->
+
+<!-- rbind(af8rs$fit, af8hct$fit, af7rs$fit, af7hct$fit) |>  -->
+<!--   mutate(Group = paste0(Condition, " - ", Sensor)) |> -->
+<!--   ggplot(aes(x=k, y=score, fill=Algorithm, color=Group)) + -->
+<!--   geom_bar(stat="identity", position="dodge") + -->
+<!--   facet_wrap(~Index, scales="free_y")  -->
+<!-- ``` -->
+
+<!-- #### Solutions -->
+
+<!-- ```{r} -->
+<!-- #| fig-width: 12 -->
+<!-- #| fig-height: 12 -->
+
+<!-- predicted_cluster <- function(out, algo="partitional", config="config1_1") { -->
+<!--   m <- out$out[[paste0("objects.", algo)]][[config]] -->
+
+<!--   # Get clusters -->
+<!--   k <- data.frame( -->
+<!--     Participant = names(out$data), -->
+<!--     Cluster = predict(m), -->
+<!--     Sensor = unique(out$fit$Sensor), -->
+<!--     Condition = unique(out$fit$Condition) -->
+<!--   ) -->
+
+<!--   # Raw average -->
+<!--   data <- df |>  -->
+<!--     filter(Condition == unique(k$Condition)) |>  -->
+<!--     summarize(AF7=mean(AF7), AF8=mean(AF8), .by=c("Participant", "time")) |>  -->
+<!--     mutate(Sensor = unique(k$Sensor), Condition = unique(k$Condition)) -->
+<!--   data$Average <- data[[unique(k$Sensor)]] -->
+<!--   data <- select(data, -AF7, -AF8) -->
+<!--   data <- full_join(data, k, by=c("Participant", "Sensor", "Condition")) |>  -->
+<!--     mutate(Cluster = paste0("Cluster", Cluster)) -->
+
+<!--   # Centroid -->
+<!--   centroids <- as.data.frame(do.call(cbind, m@centroids)) |>  -->
+<!--     setNames(paste0("Cluster", 1:length(m@centroids))) |> -->
+<!--     mutate(time = unique(df$time)) |>  -->
+<!--     pivot_longer(-time, names_to = "Cluster", values_to = "Centroid") |>  -->
+<!--     mutate(Sensor = unique(k$Sensor), Condition = unique(k$Condition)) -->
+
+<!--   # Add info -->
+<!--   data <- full_join(data, centroids, by=c("Cluster", "Sensor", "Condition", "time")) -->
+<!--   data$Algorithm <- algo -->
+<!--   data$Config <- config -->
+
+<!--   data -->
+<!-- } -->
+
+<!-- dfsub <- rbind( -->
+<!--   predicted_cluster(af8rs, algo="partitional", config="config1_1"), -->
+<!--   predicted_cluster(af8hct, algo="partitional", config="config1_1"), -->
+<!--   predicted_cluster(af7rs, algo="partitional", config="config1_1"), -->
+<!--   predicted_cluster(af7hct, algo="partitional", config="config1_1") -->
+<!-- ) -->
+
+<!-- dfsub |>  -->
+<!--   ggplot(aes(x=time, y=Average, color=Cluster)) + -->
+<!--   geom_line(aes(group=interaction(Participant, Cluster)), alpha=0.1) + -->
+<!--   geom_line(data=summarize(dfsub, Centroid=mean(Centroid), .by=c("Cluster", "Sensor", "Condition", "time")), -->
+<!--             aes(y=Centroid), linewidth=1) + -->
+<!--   geom_line(data=summarize(dfsub, Average=mean(Average), .by=c("Cluster", "Sensor", "Condition", "time")), -->
+<!--             aes(y=Average), linewidth=1, linetype="dotted") + -->
+<!--   facet_wrap(Sensor~Condition, scales="free_y") + -->
+<!--   theme_minimal() -->
+<!-- ``` -->
+
+
+## Compute Features
+
+```{r}
+get_feature <- function(channel="AF7", tmin=-0.2, tmax=-0.15, grandaverage=TRUE) {
+  if (grandaverage) {
+    dat <- df |>
+      summarize(AF7 = mean(AF7), AF8 = mean(AF8), .by=c("Participant", "Condition", "time"))
+  } else {
+    dat <- df
+  }
+  dat <- dat |> 
+    filter(time > tmin & time < tmax) |> 
+    summarize(AF7 = mean(AF7), AF8 = mean(AF8), .by=c("Participant", "Condition")) 
+  dat <- dat[c("Participant", "Condition", channel)]
+  
+  # Pivot longer
+  dat <- dat |> 
+    pivot_wider(names_from="Condition", 
+                values_from=all_of(channel), 
+                names_prefix=paste0(channel, "_", 
+                                    str_replace(tmin, "-", "m"), "_",  
+                                    str_replace(tmax, "-", "m"), "_"))
+  id <- str_remove(names(dat)[3], "_HCT")
+  dat[paste0(id, "_Diff")] <- dat[[paste0(id, "_HCT")]] - dat[[paste0(id, "_RestingState")]]
+  if(grandaverage) {
+    names(dat)[-1] <- paste0(names(dat)[-1], "_gdav")
+  }
+  dat
+}
+
+dfidx <- get_feature(channel="AF7", tmin=-0.2, tmax=-0.15, grandaverage=TRUE) |> 
+  merge(get_feature(channel="AF7", tmin=-0.2, tmax=-0.15, grandaverage=FALSE)) |> 
+  merge(get_feature(channel="AF7", tmin=-0.12, tmax=-0.02, grandaverage=TRUE)) |> 
+  merge(get_feature(channel="AF7", tmin=-0.12, tmax=-0.02, grandaverage=FALSE)) |> 
+  merge(get_feature(channel="AF7", tmin=-0.1, tmax=0, grandaverage=TRUE)) |> 
+  merge(get_feature(channel="AF7", tmin=-0.1, tmax=0, grandaverage=FALSE)) |> 
+  merge(get_feature(channel="AF7", tmin=0.03, tmax=0.17, grandaverage=TRUE)) |> 
+  merge(get_feature(channel="AF7", tmin=0.03, tmax=0.17, grandaverage=FALSE)) |> 
+  merge(get_feature(channel="AF7", tmin=0.5, tmax=0.7, grandaverage=TRUE)) |> 
+  merge(get_feature(channel="AF7", tmin=0.5, tmax=0.7, grandaverage=FALSE)) |> 
+  merge(get_feature(channel="AF8", tmin=-0.25, tmax=-0.15, grandaverage=TRUE)) |> 
+  merge(get_feature(channel="AF8", tmin=-0.25, tmax=-0.15, grandaverage=FALSE)) |> 
+  merge(get_feature(channel="AF8", tmin=-0.12, tmax=-0.02, grandaverage=TRUE)) |> 
+  merge(get_feature(channel="AF8", tmin=-0.12, tmax=-0.02, grandaverage=FALSE)) |> 
+  merge(get_feature(channel="AF8", tmin=0.025, tmax=0.125, grandaverage=FALSE)) |> 
+  merge(get_feature(channel="AF8", tmin=0.025, tmax=0.125, grandaverage=TRUE)) |> 
+  merge(get_feature(channel="AF8", tmin=0.125, tmax=0.325, grandaverage=FALSE)) |> 
+  merge(get_feature(channel="AF8", tmin=0.125, tmax=0.325, grandaverage=TRUE)) |> 
+  merge(get_feature(channel="AF8", tmin=0.5, tmax=0.7, grandaverage=FALSE)) |> 
+  merge(get_feature(channel="AF8", tmin=0.5, tmax=0.7, grandaverage=TRUE))
+```
+
+```{r}
+correlation(select(dfidx, -ends_with("gdav")), select(dfidx, ends_with("gdav"))) |> 
+  summary() |> 
+  cor_sort() |> 
+  plot()
+```
+
+
+## Correlates
+
+```{r}
+dfsub <- merge(
+  dfidx |> 
+    datawizard::data_addprefix("HEP_", select=-Participant) |> 
+    select(-ends_with("_gdav")),
+  read.csv("https://raw.githubusercontent.com/RealityBending/InteroceptionPrimals/main/data/data_participants.csv") |> 
+    rename(Participant="participant_id"), by="Participant")
+
+correlation(select(dfsub, starts_with("HEP"), -ends_with("Diff")), p_adjust="none") |> 
+  summary(redundant=TRUE) |> 
+  cor_sort() |>
+  plot() +
+  theme(
+    axis.text.x = element_text(angle=45, hjust=1)
+  )
+
+correlation(select(dfsub, starts_with("HEP")), select(dfsub, starts_with("HRV")), p_adjust="none") |> 
+  summary() |> 
+  cor_sort() |>
+  plot()
+
+correlation(select(dfsub, starts_with("HEP")), select(dfsub, starts_with("HCT")), p_adjust="none") |> 
+  summary() |> 
+  cor_sort() |>
+  plot()
+
+correlation(select(dfsub, starts_with("HEP")), select(dfsub, starts_with("IAS"), starts_with("MAIA"), -matches("\\d")), p_adjust="none") |> 
+  summary() |> 
+  cor_sort() |>
+  plot()
+```
+
+```{r}
+correlation(select(dfsub, starts_with("HRV"), starts_with("HCT"), starts_with("IAS"),
+                   starts_with("MAIA"), -matches("\\d")),
+            select(dfsub, contains("0.5_0.7"), contains("m0.12"), -ends_with("_Diff")),
+            p_adjust="none") |> 
+  summary() |> 
+  cor_sort() |>
+  plot() +
+  theme(axis.text.x = element_text(angle=45, hjust=1))
+```
+
+### Rolling
+
+```{r}
+dfavsub <- df |> 
+  summarise(AF7 = mean(AF7), AF8 = mean(AF8), 
+            .by=c("Participant", "Condition", "time"))
+  
+vars <- c("HRV_MeanNN", "MAIA_EmotionalAwareness", "MAIA_NotDistracting", "IAS_Total", "HCT_Accuracy", "HCT_Awareness")
+dfrollr <- data.frame()
+for(c in unique(df$Condition)) {
+  for(t in head(unique(df$time), -8)) {
+    
+    dat <- dfavsub[dfavsub$Condition == c & dfavsub$time >= t & dfavsub$time < t + 0.08, ] |> 
+      summarize(AF7=mean(AF7), AF8=mean(AF8), .by="Participant") |> 
+      full_join(dfsub[c("Participant", vars)], by=c("Participant"))
+    
+    for(v in vars) {
+    
+      dfrollr_ <- data.frame(
+            Condition = c,
+            time = t + (0.08) / 2,
+            Sensor = c("AF7", "AF8"),
+            r = c(cor(dat$AF7, dat[[v]], use = "complete.obs"), 
+                  cor(dat$AF8, dat[[v]], use = "complete.obs")),
+            var = v
+          )
+       dfrollr <- rbind(dfrollr, dfrollr_)
+    }
+  }
+}
+
+p1 <- df |> 
+  summarize(AF7=mean(AF7), AF8=mean(AF8), .by=c("Condition", "time")) |> 
+  pivot_longer(cols=c("AF7", "AF8"), names_to="Sensor", values_to="EEG") |> 
+  ggplot(aes(x=time)) +
+  geom_vline(xintercept=0) +
+  geom_line(aes(x=time, y=EEG, color=Condition), linewidth=1.5) +
+  scale_color_manual(values=c("RestingState"="dodgerblue", "HCT"="red")) +
+  theme_minimal() +
+  facet_wrap(~Sensor) 
+
+p2 <- dfrollr |> 
+  ggplot(aes(x=time)) +
+  geom_vline(xintercept=0) +
+  geom_hline(yintercept=0, linetype="dotted") +
+  geom_line(aes(x=time, y=r, color=Condition), linewidth=1.5) +
+  scale_color_manual(values=c("RestingState"="dodgerblue", "HCT"="red")) +
+  theme_minimal() +
+  theme(strip.placement = "outside", 
+        axis.title.y = element_blank()) +
+  facet_grid(var~Sensor, switch="y") 
+
+p1 / p2
+```
+
+<!-- ### Labelling -->
+
+
+<!-- ```{r} -->
+<!-- #| code-fold: false -->
+
+<!-- dfsub <- rbind(out1$dfsub, out2$dfsub, out3$dfsub, out4$dfsub) -->
+
+
+<!-- # m <- glmmTMB::glmmTMB(Cluster1 ~ Condition + Sensor + (1|Participant), -->
+<!-- #                       data=mutate(dfsub, Cluster1 = ifelse(Cluster == 1, 1, 0)), -->
+<!-- #                       family=binomial) -->
+<!-- # parameters::parameters(m) -->
+<!-- # -->
+<!-- # plot(estimate_means(m)) -->
+
+<!-- dfsub |> -->
+<!--   mutate(Cluster = paste0("k", Cluster)) |> -->
+<!--   pivot_wider(names_from = c("Condition", "Sensor"), values_from = "Cluster") |> -->
+<!--   datawizard::data_addprefix("HEP_Cluster_", select=-Participant) |> -->
+<!--   write.csv("../data/data_clustering.csv", row.names=FALSE) -->
+<!-- ``` -->
+
+<!-- ### Correlates -->
+
+<!-- ```{r} -->
+<!-- #| code-fold: false -->
+
+<!-- dfsub <- merge( -->
+<!--   read.csv("../data/data_clustering.csv"),  -->
+<!--   read.csv("https://raw.githubusercontent.com/RealityBending/PrimalsInteroception/main/data/data_participants.csv") |>  -->
+<!--     rename(Participant="participant_id"), -->
+<!--   by="Participant")  -->
+
+<!-- make_models <- function(outcome="MAIA_Noticing") { -->
+<!--   dat <- rbind( -->
+<!--     parameters(lm(as.formula(paste(outcome, "~ HEP_Cluster_HCT_AF8")), data=dfsub))[2, ], -->
+<!--     parameters(lm(as.formula(paste(outcome, "~ HEP_Cluster_HCT_AF7")), data=dfsub))[2, ], -->
+<!--     parameters(lm(as.formula(paste(outcome, "~ HEP_Cluster_RestingState_AF8")), data=dfsub))[2, ], -->
+<!--     parameters(lm(as.formula(paste(outcome, "~ HEP_Cluster_RestingState_AF7")), data=dfsub))[2, ] -->
+<!--     ) |>  -->
+<!--     mutate(Outcome = outcome) -->
+<!-- } -->
+
+<!-- # names(select(dfsub, !matches("\\d"))) -->
+
+<!-- rbind( -->
+<!--   make_models("MAIA_Noticing"), -->
+<!--   make_models("MAIA_NotDistracting"), -->
+<!--   make_models("MAIA_NotWorrying"), -->
+<!--   make_models("MAIA_AttentionRegulation"), -->
+<!--   make_models("MAIA_EmotionalAwareness"), -->
+<!--   make_models("MAIA_SelfRegulation"), -->
+<!--   make_models("MAIA_BodyListening"), -->
+<!--   make_models("MAIA_Trusting") -->
+<!-- ) |>  -->
+<!--   filter(p < .2) |>  -->
+<!--   arrange(p) |>  -->
+<!--   display() -->
+<!-- ``` -->
+
+<!-- ## Trial-Level Clustering -->
+
+
+<!-- ```{r} -->
+<!-- #| code-fold: false -->
+
+<!-- data <- df |>  -->
+<!--   select(Participant, Condition, epoch, time, AF7) |> -->
+<!--   pivot_wider(names_from = c("Participant", "epoch", "Condition"), values_from = "AF7") |>  -->
+<!--   select(-time) |>  -->
+<!--   as.list() -->
+
+<!-- pc <- dtwclust::tsclust( -->
+<!--   data,  -->
+<!--   type = "partitional",  -->
+<!--   distance = "sbd",  # LB_Improved (lbi), LB_Keogh (lbk) -->
+<!--   centroid = "shape", -->
+<!--   trace=TRUE, -->
+<!--   k = 2) -->
+
+<!-- as.data.frame(do.call(cbind, pc@centroids)) |>  -->
+<!--   setNames(paste0("Cluster", 1:length(pc@centroids))) |> -->
+<!--   mutate(time = unique(df$time)) |>  -->
+<!--   pivot_longer(-time, names_to = "Cluster", values_to = "Value") |> -->
+<!--   ggplot(aes(x=time, y=Value, color=Cluster)) + -->
+<!--   geom_line()  -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- #| code-fold: false -->
+
+<!-- df$Cluster <- rep(predict(pc), each=length(unique(df$time))) -->
+
+<!-- prop <- df |>  -->
+<!--   filter(time == min(time)) |>  -->
+<!--   mutate(n_epochs = length(unique(epoch)), .by=c("Participant", "Condition")) |> -->
+<!--   summarize(n = n() / max(n_epochs), .by=c("Participant", "Condition", "Cluster"))  -->
+
+<!-- glm(n ~ Condition, data=filter(prop, Cluster==1), family="binomial") |>  -->
+<!--   parameters::parameters() -->
+
+<!-- prop |>  -->
+<!--   filter(Cluster==1) |>  -->
+<!--   mutate(Participant = fct_reorder(Participant, n)) |> -->
+<!--   ggplot(aes(y=Participant, x=n)) + -->
+<!--   geom_bar(stat="identity") + -->
+<!--   geom_vline(xintercept=0.5, linetype="dashed", color="red") + -->
+<!--   facet_grid(~Condition) + -->
+<!--   coord_cartesian(xlim=c(0, 1)) -->
+<!-- ``` -->
+
+
+
+
+<!-- ## Heartbeat Evoked Potential (HEP) -->
+
+
+
+<!-- ```{r} -->
+<!-- #| code-fold: true -->
+<!-- #| label: fig-RS_HEP -->
+<!-- #| fig-cap: "Heartbeat Evoked Potential (HEP) for each participant during the resting state, overlayed over average ECG trace and PPG (infrared sensor on the forehead)." -->
+
+<!-- df <- read.csv("../data/data_hep.csv") |> -->
+<!--     # filter(participant_id %in% c("sub-07")) |> -->
+<!--   pivot_longer(c("AF7", "AF8"), names_to = "Channel", values_to = "EEG") |>  -->
+<!--   mutate(time = time * 1000) |> -->
+<!--   group_by(Condition, participant_id, Channel) |>  -->
+<!--   datawizard::standardize(select = c("EEG", "PPG_Muse", "ECG")) |> -->
+<!--   ungroup()  -->
+
+<!-- av_eeg <- df |> -->
+<!--     select(-participant_id) |> -->
+<!--     group_by(Cluster, Condition, Channel, time) |> -->
+<!--     summarise_all(list(Mean = mean,  -->
+<!--                        CI_low = \(x) as.numeric(bayestestR::eti(x))[2], -->
+<!--                        CI_high = \(x) as.numeric(bayestestR::eti(x))[3])) -->
+
+<!-- av_ecg <- df |> -->
+<!--     select(-participant_id, -Channel, -Cluster) |> -->
+<!--     group_by(Condition, time) |> -->
+<!--     summarise_all(mean)  |> -->
+<!--     datawizard::rescale(select = c("ECG", "PPG_Muse"), to = c(-3, 3)) -->
+
+<!-- df |> -->
+<!--    # filter(color == "A") |>  -->
+<!--     ggplot(aes(x = time, y = EEG)) + -->
+<!--     geom_vline(xintercept = 0, linetype = "dashed") + -->
+<!--     geom_hline(yintercept = 0) + -->
+<!--     geom_ribbon(aes(xmin = 200, xmax = 400), fill = "#FFECB3") + -->
+<!--     geom_line(data = av_ecg, aes(y = PPG_Muse), color = "#9C27B0", linewidth = 2, alpha=2/3) + -->
+<!--     geom_line(data = av_ecg, aes(y = ECG), color = "#F44336", linewidth = 2, alpha=2/3) + -->
+<!--     geom_line(aes(group = interaction(participant_id, Cluster, Channel), color = Cluster, linetype = Channel), alpha = 0.6, linewidth=0.1) + -->
+<!--     geom_ribbon(data=av_eeg, aes(group=interaction(Channel, Cluster), y=EEG_Mean, ymin=EEG_CI_low, ymax=EEG_CI_high, fill = Cluster), alpha=0.1) + -->
+<!--     geom_line(data = av_eeg, aes(y=EEG_Mean, color = Cluster, linetype = Channel), linewidth = 1) + -->
+<!--     scale_x_continuous(breaks = c(-200, 0, 200, 400, 600, 800), expand = c(0, 0)) + -->
+<!--     scale_y_continuous(expand = c(0.01, 0.01)) + -->
+<!--     scale_color_manual(values = c("N100" = "#FF9800", "P200" = "#2196F3")) + -->
+<!--     scale_fill_manual(values = c("N100" = "#FF9800", "P200" = "#2196F3")) + -->
+<!--     scale_linetype_manual(values = c("AF7" = "dotted", "AF8" = "solid")) + -->
+<!--     # coord_cartesian(ylim = c(-2, 2)) + -->
+<!--     labs(x = "Time relative to ECG R-peak (ms)", y = "EEG Amplitude (AF8)") + -->
+<!--     theme_modern() + -->
+<!--     theme( -->
+<!--         panel.grid.major.y = element_blank(), -->
+<!--         panel.grid.minor.y = element_blank() -->
+<!--     ) + -->
+<!--     facet_grid(~Condition) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- #| include = FALSE -->
+
+<!-- # Save cleaned data -->
+<!-- write.csv(df, "../data/data_clean.csv") -->
+<!-- ``` -->
