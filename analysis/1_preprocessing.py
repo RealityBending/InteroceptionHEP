@@ -10,8 +10,8 @@ import numpy as np
 import pandas as pd
 import PIL
 import pyllusion as ill
-import scipy.stats
 import requests
+import scipy.stats
 
 mne.set_log_level(verbose="WARNING")
 
@@ -19,7 +19,7 @@ mne.set_log_level(verbose="WARNING")
 # Download the load_physio() function
 exec(
     requests.get(
-        "https://raw.githubusercontent.com/RealityBending/PrimalsInteroception/main/analysis/func_load_physio.py"
+        "https://raw.githubusercontent.com/RealityBending/InteroceptionPrimals/main/analysis/func_load_physio.py"
     ).text
 )
 
@@ -261,14 +261,10 @@ for sub in meta["participant_id"].values[0::]:
     qc["hct_eeg"] = qc_eeg(hct, sub, plots=qc["hct_eeg"])
 
     # Preprocess physio
-    ecg, _ = nk.bio_process(
-        ecg=hct["ECG"][0][0], ppg=hct["PPG_Muse"][0][0], sampling_rate=hct.info["sfreq"]
-    )
+    ecg, _ = nk.bio_process(ecg=hct["ECG"][0][0], ppg=hct["PPG_Muse"][0][0], sampling_rate=hct.info["sfreq"])
 
     # Find events (again as data was cropped) and epoch ---------------------------------------
-    events = nk.events_find(
-        hct["PHOTO"][0][0], threshold_keep="below", duration_min=15000
-    )
+    events = nk.events_find(hct["PHOTO"][0][0], threshold_keep="below", duration_min=15000)
     assert len(events["onset"]) == 6  # Check that there are 6 epochs (the 6 intervals)
 
     # Find R-peaks
@@ -286,9 +282,7 @@ for sub in meta["participant_id"].values[0::]:
     hep["df"]["Condition"] = "HCT"
 
     # QC
-    qc["hct_hep"] = qc_hep(
-        hep["epochs"], hep["autoreject_log"], sub, plots=qc["hct_hep"]
-    )
+    qc["hct_hep"] = qc_hep(hep["epochs"], hep["autoreject_log"], sub, plots=qc["hct_hep"])
     qc["hct_heo"] = qc_heo(hep["timefrequency"], hep["itc"], sub, plots=qc["hct_heo"])
 
     # Save data
@@ -297,9 +291,7 @@ for sub in meta["participant_id"].values[0::]:
 
 # Clean up and Save data
 for i in range(11):
-    df[df["Participant"].str.contains(f"sub-{i}[1-9]")].to_csv(
-        f"../data/data_hep{i+1}.csv", index=False
-    )
+    df[df["Participant"].str.contains(f"sub-{i}[1-9]")].to_csv(f"../data/data_hep{i+1}.csv", index=False)
 
 
 # Save figures
