@@ -28,19 +28,32 @@ def qc_eeg(raw, sub, plots=[]):
     """Quality control (QC) of EEG."""
     ch_names = ["AF7", "AF8", "TP9", "TP10"]
 
-    fig1, ax = plt.subplots(4, 1, figsize=(6, 5))
-    fig1.suptitle(f"{sub}")
+    # Make fig
+    fig, ax = plt.subplot_mosaic(
+        [["A", "right"], ["B", "right"], ["C", "right"], ["D", "right"]],
+        figsize=(10, 6),
+        layout="constrained",
+    )
+    fig.suptitle(f"{sub}")
 
+    # Traces
     df = raw.to_data_frame()
     df.index = df["time"] / 60
-    df[ch_names].plot(ax=ax, subplots=True, linewidth=0.5)
+    df[ch_names].plot(
+        ax=[ax[k] for k in ["A", "B", "C", "D"]], subplots=True, linewidth=0.5
+    )
 
     # PSD
-    fig2, ax = plt.subplots(1, 1, figsize=(6, 5))
     psd = raw.compute_psd(picks="eeg", n_fft=256 * 20, fmax=80).to_data_frame()
-    psd.plot(x="freq", y=ch_names, ax=ax, logy=True)
+    psd.plot(x="freq", y=ch_names, ax=ax["right"], logy=True)
 
-    img = ill.image_mosaic([nk.fig2img(i) for i in [fig1, fig2]], nrows=1, ncols=2)
+    # Add legend
+    [x.legend(loc="upper right") for _, x in ax.items()]
+
+    # Resize
+    fig.set_size_inches(fig.get_size_inches() * 0.4)
+
+    img = nk.fig2img(fig)
 
     # To image
     plots.append(img)
@@ -65,9 +78,6 @@ def analyze_hep(raw, events):
         verbose=False,
         preload=True,
     )
-
-    # epochs.info["sfreq"]
-
     # Remove epochs with missing data
     epochs = epochs.drop([np.isnan(e).any() for e in epochs])
 
@@ -78,7 +88,7 @@ def analyze_hep(raw, events):
         epochs = ar.fit_transform(original_epochs)
         out["autoreject_log"] = ar.get_reject_log(original_epochs.copy().pick("eeg"))
         # out["autoreject_log"].plot("horizontal", aspect="auto")
-        # p2 = out["autoreject_log"].plot_epochs(original_epochs.copy().pick("eeg"))
+        # out["autoreject_log"].plot_epochs(original_epochs.copy().pick("eeg"))
     except IndexError:
         out["autoreject_log"] = None
 
@@ -111,7 +121,7 @@ def analyze_hep(raw, events):
     # Compute Time-frequency Power
     # "We set the frequency range at 1 Hz intervals from 5 Hz to 20 Hz, excluding frequencies below 5 Hz to reduce the influence of
     # slow-varying artifacts, aligning with approaches used in previous studies (Park et al., 2018, Kern et al., 2013)" (Lee et al., 2024)
-    freqs = np.logspace(*np.log10([5, 30]), num=20)  # freqs of interest (log-spaced)
+    freqs = np.logspace(*np.log10([5, 40]), num=40)  # freqs of interest (log-spaced)
     n_cycles = freqs / 2.0  # different number of cycle per frequency
     power, itc = mne.time_frequency.tfr_morlet(
         epochs,
@@ -121,12 +131,12 @@ def analyze_hep(raw, events):
         use_fft=True,
         return_itc=True,
     )
+
+    # power.plot()
+    # itc.plot()
+
     out["timefrequency"] = power
     out["itc"] = itc
-
-    # Compute HEO Features
-    # power.to_data_frame()
-    # power.plot()
 
     return out
 
@@ -150,12 +160,12 @@ def qc_hep(epochs, reject_log, sub, plots=[]):
 
 def qc_heo(power, itc, sub, plots=[]):
     fig, ax = plt.subplots(2, 2, figsize=(8, 8))
-    # fig.tight_layout()
+
     power.plot(
         baseline=None,
         mode="logratio",
-        vmin=0,
         axes=ax[0],
+        vlim=(0, None),
         show=False,
     )
     ax[0][0].set_title("Power (AF7)")
@@ -163,7 +173,7 @@ def qc_heo(power, itc, sub, plots=[]):
 
     itc.plot(
         title="Inter-Trial coherence",
-        vmin=0,
+        vlim=(0, None),
         cmap="CMRmap",
         axes=ax[1],
         show=False,
@@ -201,12 +211,12 @@ qc = {
 
 # sub = "sub-19"
 # Loop through participants ==================================================================
-for sub in meta["participant_id"].values[0::]:
+for i, sub in enumerate(meta["participant_id"].values[0::]):
     # Print progress and comments
-    print(sub)
+    print(f"{i}: {sub}")
     print("  * " + meta[meta["participant_id"] == sub]["Comments"].values[0])
 
-    if sub in ["sub-86"]:
+    if sub in ["sub-86"]:  # No RS data
         continue
 
     # Load data
@@ -261,19 +271,23 @@ for sub in meta["participant_id"].values[0::]:
     qc["hct_eeg"] = qc_eeg(hct, sub, plots=qc["hct_eeg"])
 
     # Preprocess physio
-    ecg, _ = nk.bio_process(ecg=hct["ECG"][0][0], ppg=hct["PPG_Muse"][0][0], sampling_rate=hct.info["sfreq"])
+    ecg, _ = nk.bio_process(
+        ecg=hct["ECG"][0][0], ppg=hct["PPG_Muse"][0][0], sampling_rate=hct.info["sfreq"]
+    )
 
     # Find events (again as data was cropped) and epoch ---------------------------------------
-    events = nk.events_find(hct["PHOTO"][0][0], threshold_keep="below", duration_min=15000)
+    events = nk.events_find(
+        hct["PHOTO"][0][0], threshold_keep="below", duration_min=15000
+    )
     assert len(events["onset"]) == 6  # Check that there are 6 epochs (the 6 intervals)
 
     # Find R-peaks
     beats = ecg["ECG_R_Peaks"].values.nonzero()[0]
-    intervals = [[i, i + j] for i, j in zip(events["onset"], events["duration"])]
-    for i, b in enumerate(beats):
+    intervals = [[o, o + d] for o, d in zip(events["onset"], events["duration"])]
+    for i_b, b in enumerate(beats):
         # If it's not in any interval, remove it
         if not any([b >= j[0] and b <= j[1] for j in intervals]):
-            beats[i] = 0
+            beats[i_b] = 0
     beats = beats[beats != 0]
 
     # Analyze HEP -------------------------------------------------------------------------
@@ -282,25 +296,54 @@ for sub in meta["participant_id"].values[0::]:
     hep["df"]["Condition"] = "HCT"
 
     # QC
-    qc["hct_hep"] = qc_hep(hep["epochs"], hep["autoreject_log"], sub, plots=qc["hct_hep"])
+    qc["hct_hep"] = qc_hep(
+        hep["epochs"], hep["autoreject_log"], sub, plots=qc["hct_hep"]
+    )
     qc["hct_heo"] = qc_heo(hep["timefrequency"], hep["itc"], sub, plots=qc["hct_heo"])
 
-    # Save data
+    # Concat
     df = pd.concat([df, hep["df"]], axis=0)
 
+    # Save data
+    if i in [49, 99, len(meta["participant_id"].values) - 1]:
+        print(f"**SAVING DATA** ({i})")
+        # Clean up and Save data
+        for j in range(13):
+            df[df["Participant"].str.contains(f"sub-{j}[0-4]")].to_csv(
+                f"../data/data_hep{j+1}a.csv", index=False
+            )
+            df[df["Participant"].str.contains(f"sub-{j}[5-9]")].to_csv(
+                f"../data/data_hep{j+1}b.csv", index=False
+            )
 
-# Clean up and Save data
-for i in range(11):
-    df[df["Participant"].str.contains(f"sub-{i}[1-9]")].to_csv(f"../data/data_hep{i+1}.csv", index=False)
+        # Save figures
+        ill.image_mosaic(qc["rs_eeg"], ncols=5, nrows="auto").save(
+            f"signals/rs_eeg_{i+1}.png"
+        )
+        ill.image_mosaic(qc["rs_hep"], ncols=5, nrows="auto").save(
+            f"signals/rs_hep_{i+1}.png"
+        )
+        ill.image_mosaic(qc["rs_heo"], ncols=5, nrows="auto").save(
+            f"signals/rs_heo_{i+1}.png"
+        )
+        ill.image_mosaic(qc["hct_eeg"], ncols=5, nrows="auto").save(
+            f"signals/hct_eeg_{i+1}.png"
+        )
+        ill.image_mosaic(qc["hct_hep"], ncols=5, nrows="auto").save(
+            f"signals/hct_hep_{i+1}.png"
+        )
+        ill.image_mosaic(qc["hct_heo"], ncols=5, nrows="auto").save(
+            f"signals/hct_heo_{i+1}.png"
+        )
 
-
-# Save figures
-ill.image_mosaic(qc["rs_eeg"], ncols=6, nrows="auto").save("signals/rs_eeg.png")
-ill.image_mosaic(qc["rs_hep"], ncols=6, nrows="auto").save("signals/rs_hep.png")
-ill.image_mosaic(qc["rs_heo"], ncols=6, nrows="auto").save("signals/rs_heo.png")
-ill.image_mosaic(qc["hct_eeg"], ncols=6, nrows="auto").save("signals/hct_eeg.png")
-ill.image_mosaic(qc["hct_hep"], ncols=6, nrows="auto").save("signals/hct_hep.png")
-ill.image_mosaic(qc["hct_heo"], ncols=6, nrows="auto").save("signals/hct_heo.png")
+        qc = {
+            "rs_eeg": [],
+            "rs_hep": [],
+            "rs_heo": [],
+            "hct_eeg": [],
+            "hct_hep": [],
+            "hct_heo": [],
+        }
 
 
 print("Done!")
