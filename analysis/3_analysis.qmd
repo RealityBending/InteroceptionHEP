@@ -28,18 +28,9 @@ library(dtwclust)
 ```{r}
 #| code-fold: false
 
-df <- rbind(
-  read.csv("../data/data_hep1.csv"),
-  read.csv("../data/data_hep2.csv"),
-  read.csv("../data/data_hep3.csv"),
-  read.csv("../data/data_hep4.csv"),
-  read.csv("../data/data_hep5.csv"),
-  read.csv("../data/data_hep6.csv"),
-  read.csv("../data/data_hep7.csv"),
-  read.csv("../data/data_hep8.csv"),
-  read.csv("../data/data_hep9.csv"),
-  read.csv("../data/data_hep10.csv"),
-  read.csv("../data/data_hep11.csv"))
+# List files
+files <- list.files("../data/", pattern="data_hep", full.name = TRUE)
+df <- do.call(rbind, lapply(files, read.csv)) 
 
 dfsub <- read.csv("https://raw.githubusercontent.com/RealityBending/InteroceptionPrimals/main/data/data_participants.csv") |> 
   rename(Participant="participant_id") |> 
@@ -58,6 +49,7 @@ dffeat <- read.csv("../data/data_features.csv") |>
 exclude <- c("sub-06", "sub-76", "sub-94")
 ```
 
+TODO: clarify why we exclude these participants.
 
 ```{r}
 #| fig-width: 13
@@ -125,7 +117,8 @@ ecg <- summarize(df, ECG = median(ECG), RSP = median(RSP), .by="time") |>
 
 p1 <- dfavsub |> 
   mutate(Condition = str_replace(Condition, "RestingState", "Resting State"),
-         Condition = str_replace(Condition, "HCT", "Heartbeat Counting")) |> 
+         Condition = str_replace(Condition, "HCT", "Heartbeat Counting")),
+         # time = time + 0.14) |> 
   ggplot(aes(x=time, y=EEG)) +
   geom_vline(xintercept=0, color="grey") +
   geom_line(data=ecg, aes(y=ECG), color="red", linewidth=2, alpha=0.1) +

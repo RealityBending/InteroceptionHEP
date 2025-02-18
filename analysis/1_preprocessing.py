@@ -32,7 +32,6 @@ def qc_eeg(raw, sub, plots=[]):
     fig, ax = plt.subplot_mosaic(
         [["A", "right"], ["B", "right"], ["C", "right"], ["D", "right"]],
         figsize=(10, 6),
-        layout="constrained",
     )
     fig.suptitle(f"{sub}")
 
@@ -42,13 +41,14 @@ def qc_eeg(raw, sub, plots=[]):
     df[ch_names].plot(
         ax=[ax[k] for k in ["A", "B", "C", "D"]], subplots=True, linewidth=0.5
     )
+    [ax[k].get_legend().remove() for k in ["A", "B", "C", "D"]]
 
     # PSD
     psd = raw.compute_psd(picks="eeg", n_fft=256 * 20, fmax=80).to_data_frame()
     psd.plot(x="freq", y=ch_names, ax=ax["right"], logy=True)
 
     # Add legend
-    [x.legend(loc="upper right") for _, x in ax.items()]
+    ax["right"].legend(loc="upper right")
 
     # Resize
     fig.set_size_inches(fig.get_size_inches() * 0.4)
@@ -269,7 +269,6 @@ for i, sub in enumerate(meta["participant_id"].values[0::]):
 
     # QC
     qc["hct_eeg"] = qc_eeg(hct, sub, plots=qc["hct_eeg"])
-
     # Preprocess physio
     ecg, _ = nk.bio_process(
         ecg=hct["ECG"][0][0], ppg=hct["PPG_Muse"][0][0], sampling_rate=hct.info["sfreq"]
@@ -309,10 +308,10 @@ for i, sub in enumerate(meta["participant_id"].values[0::]):
         print(f"**SAVING DATA** ({i})")
         # Clean up and Save data
         for j in range(13):
-            df[df["Participant"].str.contains(f"sub-{j}[0-4]")].to_csv(
+            df[df["Participant"].str.contains(f"sub-{j}[0-4]$")].to_csv(
                 f"../data/data_hep{j+1}a.csv", index=False
             )
-            df[df["Participant"].str.contains(f"sub-{j}[5-9]")].to_csv(
+            df[df["Participant"].str.contains(f"sub-{j}[5-9]$")].to_csv(
                 f"../data/data_hep{j+1}b.csv", index=False
             )
 
