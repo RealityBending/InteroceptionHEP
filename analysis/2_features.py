@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import neurokit2 as nk
 
-df = pd.concat([pd.read_csv(f"../data/data_hep{i}.csv") for i in range(1, 12)])
+df = pd.concat([pd.read_csv(f"../data/data_hep{i}.csv", engine="c") for i in range(1, 12)])
 
 
 # persub = df.groupby(["Condition", "time"]).median(numeric_only=True).reset_index()
@@ -94,8 +94,8 @@ for p in df.Participant.unique():
                 _feat["AF8_Entropy_Hjorth"], _ = nk.complexity_hjorth(w.AF8.values)
                 # _feat["AF7_Entropy_DiffEn"], _ = nk.entropy_differential(w.AF7.values)
                 # _feat["AF8_Entropy_DiffEn"], _ = nk.entropy_differential(w.AF8.values)
-                _feat["AF7_Entropy_AttEn"], _ = nk.entropy_attention(w.AF7, silent=True)
-                _feat["AF8_Entropy_AttEn"], _ = nk.entropy_attention(w.AF8, silent=True)
+                _feat["AF7_Entropy_AttEn"], _ = nk.entropy_attention(w.AF7)
+                _feat["AF8_Entropy_AttEn"], _ = nk.entropy_attention(w.AF8)
                 _feat["AF7_Entropy_Delay"], _ = nk.complexity_delay(
                     w.AF7.values,
                     delay_max=4,
