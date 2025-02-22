@@ -1,13 +1,13 @@
 ---
 title: "Analysis"
 editor: source
-editor_options: 
+editor_options:
   chunk_output_type: console
 format:
   html:
     code-fold: true
     self-contained: false
-execute: 
+execute:
   cache: false
 ---
 
@@ -21,32 +21,25 @@ library(tidyverse)
 library(easystats)
 library(patchwork)
 library(ggside)
+library(ggdist)
 library(dtwclust)
+library(data.table)
 ```
 
 
 ```{r}
 #| code-fold: false
 
-df <- rbind(
-  read.csv("../data/data_hep1.csv"),
-  read.csv("../data/data_hep2.csv"),
-  read.csv("../data/data_hep3.csv"),
-  read.csv("../data/data_hep4.csv"),
-  read.csv("../data/data_hep5.csv"),
-  read.csv("../data/data_hep6.csv"),
-  read.csv("../data/data_hep7.csv"),
-  read.csv("../data/data_hep8.csv"),
-  read.csv("../data/data_hep9.csv"),
-  read.csv("../data/data_hep10.csv"),
-  read.csv("../data/data_hep11.csv"))
+# List files
+files <- list.files("../data/", pattern="data_hep", full.name = TRUE)
+df <- do.call(rbind, lapply(files, read.csv))
 
-dfsub <- read.csv("https://raw.githubusercontent.com/RealityBending/InteroceptionPrimals/main/data/data_participants.csv") |> 
-  rename(Participant="participant_id") |> 
+dfsub <- fread("https://raw.githubusercontent.com/RealityBending/InteroceptionPrimals/main/data/data_participants.csv") |>
+  rename(Participant="participant_id") |>
   select(-matches("\\d"))
 
-dffeat <- read.csv("../data/data_features.csv") |> 
-  merge(select(dfsub, Participant, starts_with("MAIA_"), starts_with("IAS"), starts_with("HRV"), starts_with("HCT")), 
+dffeat <- fread("data/data_features.csv") |>
+  merge(select(dfsub, Participant, starts_with("MAIA_"), starts_with("IAS"), starts_with("HRV"), starts_with("HCT")),
         by="Participant")
 ```
 
@@ -58,31 +51,32 @@ dffeat <- read.csv("../data/data_features.csv") |>
 exclude <- c("sub-06", "sub-76", "sub-94")
 ```
 
+TODO: clarify why we exclude these participants.
 
 ```{r}
 #| fig-width: 13
 #| fig-height: 16
 
-dat <- df |>  
+dat <- df |>
   summarize(ggdist::mean_qi(AF7, .width=0.2), .by=c("Participant", "Condition", "time")) |>
-  mutate(Sensor = "AF7") |> 
+  mutate(Sensor = "AF7") |>
   rbind(
-    df |>  
+    df |>
       summarize(ggdist::mean_qi(AF8, .width=0.2), .by=c("Participant", "Condition", "time")) |>
       mutate(Sensor = "AF8")
-  )
+)
 
-dat_rect <- summarize(dat, ymin = min(y), ymax = max(y), .by=c("Participant")) |> 
+dat_rect <- summarize(dat, ymin = min(y), ymax = max(y), .by=c("Participant")) |>
   mutate(Exclude = case_when(Participant %in% exclude ~ TRUE, .default = FALSE))
 
 dat |>
-  mutate(color = paste0(Condition, "_", Sensor)) |> 
+  mutate(color = paste0(Condition, "_", Sensor)) |>
   ggplot() +
   geom_vline(xintercept=0) +
   geom_vline(xintercept=c(-0.14, 0.1), color="grey") +
   geom_line(aes(x=time, y=y, color=color), linewidth=0.5) +
   geom_rect(data=dat_rect, aes(xmin=-0.3, xmax=0.8, ymin=ymin, ymax=ymax, color=Exclude), alpha=0, show.legend = FALSE) +
-  scale_color_manual(values=c("RestingState_AF7"="dodgerblue", "RestingState_AF8"="darkblue", 
+  scale_color_manual(values=c("RestingState_AF7"="dodgerblue", "RestingState_AF8"="darkblue",
                               "HCT_AF7"="red", "HCT_AF8"="darkred", "TRUE"="red", "FALSE"="white"),
                      breaks=c("RestingState", "HCT")) +
   # geom_line(aes(color=Condition, group=epoch)) +
@@ -105,8 +99,8 @@ dfsub <- filter(dfsub, !Participant %in% exclude)
 ## Sample
 
 ```{r}
-df |>  
-  summarize(n = length(unique(epoch)), .by=c("Participant", "Condition")) |> 
+df |>
+  summarize(n = length(unique(epoch)), .by=c("Participant", "Condition")) |>
   ggplot(aes(x=n, fill=Condition)) +
   geom_histogram(alpha=0.7, binwidth=30)
 ```
@@ -115,17 +109,18 @@ df |>
 ## Grand Average
 
 ```{r}
-dfavsub <- df |>  
-  summarize(AF7 = mean(AF7), AF8=mean(AF8), .by=c("Participant", "Condition", "time")) |> 
-  summarize(AF7 = median(AF7), AF8=median(AF8), .by=c("Condition", "time")) |> 
+dfavsub <- df |>
+  summarize(AF7 = mean(AF7), AF8=mean(AF8), .by=c("Participant", "Condition", "time")) |>
+  summarize(AF7 = median(AF7), AF8=median(AF8), .by=c("Condition", "time")) |>
   pivot_longer(c("AF7", "AF8"), names_to = "Sensor", values_to="EEG")
 
-ecg <- summarize(df, ECG = median(ECG), RSP = median(RSP), .by="time") |> 
+ecg <- summarize(df, ECG = median(ECG), RSP = median(RSP), .by="time") |>
   mutate(ECG = datawizard::rescale(ECG, to=c(min(dfavsub$EEG), max(dfavsub$EEG))))
 
-p1 <- dfavsub |> 
+p1 <- dfavsub |>
   mutate(Condition = str_replace(Condition, "RestingState", "Resting State"),
-         Condition = str_replace(Condition, "HCT", "Heartbeat Counting")) |> 
+         Condition = str_replace(Condition, "HCT", "Heartbeat Counting")),
+         # time = time + 0.14) |>
   ggplot(aes(x=time, y=EEG)) +
   geom_vline(xintercept=0, color="grey") +
   geom_line(data=ecg, aes(y=ECG), color="red", linewidth=2, alpha=0.1) +
@@ -163,8 +158,8 @@ for(w in unique(dffeat$time)) {
     dat <- dffeat[dffeat$time == w & dffeat$Condition == c, ]
     r <- correlation(select(dat, starts_with("AF")),
                      select(dat, starts_with("MAIA"), starts_with("IAS"), starts_with("HRV"), starts_with("HCT")),
-                     p_adjust="none") |> 
-      separate(Parameter1, into=c("Sensor", "Type", "Feature")) |> 
+                     p_adjust="none") |>
+      separate(Parameter1, into=c("Sensor", "Type", "Feature")) |>
       mutate(time = w,  Condition = c)
     dfrollr <- rbind(dfrollr, r)
   }
@@ -175,7 +170,7 @@ make_rollingplot <- function(dfrollr, legend.position="top") {
     mutate(Condition = str_replace(Condition, "RestingState", "RS"),
            color = paste0(Feature, " (", Condition, ")"),
            color = fct_rev(color),
-           alpha = ifelse(p < .05, "Sig", "Nonsig"))  |> 
+           alpha = ifelse(p < .05, "Sig", "Nonsig"))  |>
     ggplot(aes(x=time, y=r)) +
     geom_hline(yintercept = 0) +
     geom_vline(xintercept = 0, color="grey") +
@@ -189,7 +184,7 @@ make_rollingplot <- function(dfrollr, legend.position="top") {
     theme(strip.background.x = element_blank(),
           strip.text.x = element_blank(),
           # strip.background.x = element_rect(fill="grey", color=NA),
-          strip.placement = "outside", 
+          strip.placement = "outside",
           axis.title.y = element_blank(),
           panel.grid.minor = element_blank(),
           plot.title = element_text(face="bold", hjust=0.5),
@@ -199,9 +194,9 @@ make_rollingplot <- function(dfrollr, legend.position="top") {
 }
 
 make_rollingplot(filter(dfrollr, Feature == "Mean", str_detect(Parameter2, "HCT_"))) |
-  make_rollingplot(filter(dfrollr, Feature == "Median", str_detect(Parameter2, "HCT_"))) 
+  make_rollingplot(filter(dfrollr, Feature == "Median", str_detect(Parameter2, "HCT_")))
 
-make_rollingplot(filter(dfrollr, str_detect(Feature, "1015Mean|1530Mean|1030Mean"), str_detect(Parameter2, "HCT_"))) 
+make_rollingplot(filter(dfrollr, str_detect(Feature, "1015Mean|1530Mean|1030Mean"), str_detect(Parameter2, "HCT_")))
 
 make_rollingplot(filter(dfrollr, Type == "Fractal", str_detect(Parameter2, "HCT_"))) |
   make_rollingplot(filter(dfrollr, Type == "Entropy", str_detect(Parameter2, "HCT_")))
@@ -216,7 +211,7 @@ make_rollingplot(filter(dfrollr, Type == "Fractal", str_detect(Parameter2, "HCT_
 make_rollingplot(filter(dfrollr, Feature == "Mean", str_detect(Parameter2, "MAIA|IAS"))) |
   make_rollingplot(filter(dfrollr, Feature == "Median", str_detect(Parameter2, "MAIA|IAS")))
 
-make_rollingplot(filter(dfrollr, str_detect(Feature, "1015Mean|1530Mean|1030Mean"), str_detect(Parameter2, "MAIA|IAS"))) 
+make_rollingplot(filter(dfrollr, str_detect(Feature, "1015Mean|1530Mean|1030Mean"), str_detect(Parameter2, "MAIA|IAS")))
 
 make_rollingplot(filter(dfrollr, Type == "Fractal", str_detect(Parameter2, "MAIA|IAS"))) |
   make_rollingplot(filter(dfrollr, Type == "Entropy", str_detect(Parameter2, "MAIA|IAS")))
@@ -228,10 +223,10 @@ make_rollingplot(filter(dfrollr, Type == "Fractal", str_detect(Parameter2, "MAIA
 #| fig-height: 10
 #| fig-width: 8
 
-make_rollingplot(filter(dfrollr, Feature == "Mean", str_detect(Parameter2, "HRV"))) | 
+make_rollingplot(filter(dfrollr, Feature == "Mean", str_detect(Parameter2, "HRV"))) |
   make_rollingplot(filter(dfrollr, Feature == "Median", str_detect(Parameter2, "HRV")))
 
-make_rollingplot(filter(dfrollr, str_detect(Feature, "1015Mean|1530Mean|1030Mean"), str_detect(Parameter2, "HRV"))) 
+make_rollingplot(filter(dfrollr, str_detect(Feature, "1015Mean|1530Mean|1030Mean"), str_detect(Parameter2, "HRV")))
 
 make_rollingplot(filter(dfrollr, Type == "Fractal", str_detect(Parameter2, "HRV"))) |
   make_rollingplot(filter(dfrollr, Type == "Entropy", str_detect(Parameter2, "HRV")))
@@ -240,9 +235,9 @@ make_rollingplot(filter(dfrollr, Type == "Fractal", str_detect(Parameter2, "HRV"
 :::
 
 ```{r}
-dfrollr |> 
-  mutate(Feature = fct_reorder(Feature, abs(r)), 
-         sig=ifelse(p < .05, "Sig", "Nonsig")) |> 
+dfrollr |>
+  mutate(Feature = fct_reorder(Feature, abs(r)),
+         sig=ifelse(p < .05, "Sig", "Nonsig")) |>
   ggplot(aes(x=abs(r), y=Feature, fill=sig)) +
   ggdist::stat_slabinterval()
 ```
@@ -293,12 +288,12 @@ p3
 #| fig-height: 10
 #| fig-width: 8
 
-delay <- dffeat |> 
-  select(Participant, ends_with("Delay")) |> 
-  pivot_longer(-Participant) 
+delay <- dffeat |>
+  select(Participant, ends_with("Delay")) |>
+  pivot_longer(-Participant)
 
- 
-summarize(delay, value = mean(value), .by=c("Participant", "name")) |> 
+
+summarize(delay, value = mean(value), .by=c("Participant", "name")) |>
   ggplot(aes(x=value)) +
   geom_density(data=delay, aes(group=interaction(name, Participant)), alpha=0.5, color="grey") +
   geom_density(aes(fill=name), alpha=0.5) +

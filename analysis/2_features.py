@@ -1,8 +1,11 @@
-import pandas as pd
-import numpy as np
-import neurokit2 as nk
+import os
 
-df = pd.concat([pd.read_csv(f"../data/data_hep{i}.csv") for i in range(1, 12)])
+import neurokit2 as nk
+import numpy as np
+import pandas as pd
+
+files = [f for f in os.listdir("../data/") if f.startswith("data_hep")]
+df = pd.concat([pd.read_csv(f"../data/{f}", engine="c") for f in files])
 
 
 # persub = df.groupby(["Condition", "time"]).median(numeric_only=True).reset_index()
@@ -77,25 +80,17 @@ for p in df.Participant.unique():
                 _feat["AF8_Fractal_KFD"], _ = nk.fractal_katz(w.AF8.values)
                 _feat["AF7_Fractal_SFD"], _ = nk.fractal_sevcik(w.AF7.values)
                 _feat["AF8_Fractal_SFD"], _ = nk.fractal_sevcik(w.AF8.values)
-                _feat["AF7_Fractal_PFDsign"], _ = nk.fractal_petrosian(
-                    w.AF7.values, symbolize="C"
-                )
-                _feat["AF8_Fractal_PFDsign"], _ = nk.fractal_petrosian(
-                    w.AF8.values, symbolize="C"
-                )
-                _feat["AF7_Fractal_PFDmean"], _ = nk.fractal_petrosian(
-                    w.AF7.values, symbolize="A"
-                )
-                _feat["AF8_Fractal_PFDmean"], _ = nk.fractal_petrosian(
-                    w.AF8.values, symbolize="A"
-                )
+                _feat["AF7_Fractal_PFDsign"], _ = nk.fractal_petrosian(w.AF7.values, symbolize="C")
+                _feat["AF8_Fractal_PFDsign"], _ = nk.fractal_petrosian(w.AF8.values, symbolize="C")
+                _feat["AF7_Fractal_PFDmean"], _ = nk.fractal_petrosian(w.AF7.values, symbolize="A")
+                _feat["AF8_Fractal_PFDmean"], _ = nk.fractal_petrosian(w.AF8.values, symbolize="A")
 
                 _feat["AF7_Entropy_Hjorth"], _ = nk.complexity_hjorth(w.AF7.values)
                 _feat["AF8_Entropy_Hjorth"], _ = nk.complexity_hjorth(w.AF8.values)
                 # _feat["AF7_Entropy_DiffEn"], _ = nk.entropy_differential(w.AF7.values)
                 # _feat["AF8_Entropy_DiffEn"], _ = nk.entropy_differential(w.AF8.values)
-                _feat["AF7_Entropy_AttEn"], _ = nk.entropy_attention(w.AF7, silent=True)
-                _feat["AF8_Entropy_AttEn"], _ = nk.entropy_attention(w.AF8, silent=True)
+                _feat["AF7_Entropy_AttEn"], _ = nk.entropy_attention(w.AF7)
+                _feat["AF8_Entropy_AttEn"], _ = nk.entropy_attention(w.AF8)
                 _feat["AF7_Entropy_Delay"], _ = nk.complexity_delay(
                     w.AF7.values,
                     delay_max=4,
@@ -108,12 +103,8 @@ for p in df.Participant.unique():
                     method="fraser1986",
                     algorithm="first local minimum (corrected)",
                 )
-                _feat["AF7_Entropy_SVDEn"], _ = nk.entropy_svd(
-                    w.AF7.values, delay=2, dimension=2
-                )
-                _feat["AF8_Entropy_SVDEn"], _ = nk.entropy_svd(
-                    w.AF8.values, delay=2, dimension=2
-                )
+                _feat["AF7_Entropy_SVDEn"], _ = nk.entropy_svd(w.AF7.values, delay=2, dimension=2)
+                _feat["AF8_Entropy_SVDEn"], _ = nk.entropy_svd(w.AF8.values, delay=2, dimension=2)
 
                 feat.append(pd.DataFrame(_feat, index=[0]))
 
