@@ -194,7 +194,7 @@ function main(; epoch_analysis = false)
 
         steps = length(participants) * length(epochs) * 50 # 50 correlations for each combination
 
-        # Preallocate the vector with a struct of dummy values
+        # Preallocate the vector
         output = Vector{EpochCorTestResult}(undef, steps)
 
         Threads.@threads for pp in participants
@@ -223,10 +223,8 @@ function main(; epoch_analysis = false)
 
         steps = length(window_widths) * length(conditions) * length(times) * 51 # 50 correlations for each combination, plus 1 extra for good luck
 
-        # Preallocate the vector with a struct of dummy values
+        # Preallocate the vector
         output = Vector{CorTestResult}(undef, steps)
-
-        # output = create_output_vec(steps, CorTestResult)
 
         # A w of 0.1 means 0.1 each side of the mean (total width 0.2)
         Threads.@threads for w in window_widths
