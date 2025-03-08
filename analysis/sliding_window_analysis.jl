@@ -7,6 +7,7 @@ println(Threads.nthreads())
     Parameter1::Symbol = Symbol()
     Parameter2::Symbol = Symbol()
     r::Float64 = 0.0
+    abs_r::Float64 = 0.0
     time::Float64 = 0.0
     condition::Symbol = Symbol()
     window_size::Float64 = 0.0
@@ -23,6 +24,7 @@ end
     Parameter1::Symbol = Symbol()
     Parameter2::Symbol = Symbol()
     r::Float64 = 0.0
+    abs_r::Float64 = 0.0
     p::Float64 = 0.0
     t::Float64 = 0.0
     ci_lower::Float64 = 0.0
@@ -31,8 +33,19 @@ end
     n::Int = 0
     df_error::Int = 0
     epoch::Int = 0
-    participant::String = ""
 end
+
+"""
+Give each thread a vector to store its results, then we'll concat them at the end
+"""
+mutable struct InnerOutputVec{T}
+    vec::Vector{T}
+    count::Int
+
+    InnerOutputVec{T}(length) where {T} = new(Vector{T}(undef, cld(length, Threads.nthreads())), 1)
+end
+
+create_output_vec(length, T) = [InnerOutputVec{T}(length) for _ = 1:Threads.nthreads()]
 
 # Functions
 
@@ -43,7 +56,7 @@ function filter_missings(args...)
     return collect.(skipmissings(args...))
 end
 
-function load_csvs(first::Int = nothing)
+function load_csvs(first::Union{Int, Nothing} = nothing)
     csvs = filter(file -> contains(file, "data_hep"), readdir("data", join = true))
     hepdata = reduce(
         vcat,
@@ -58,13 +71,13 @@ function load_csvs(first::Int = nothing)
 
     filtered_cols = filter(
         col ->
-            (
+            !contains(col, r"\d") && (
                 col == "Participant" ||
                 startswith(col, "MAIA_") ||
                 startswith(col, "IAS") ||
                 startswith(col, "HRV") ||
                 startswith(col, "HCT")
-            ) && !contains(col, r"\d"),
+            ),
         names(interoprimals),
     )
 
@@ -79,13 +92,13 @@ end
 
 function prepare_variables(windowed)
 
-    grouped = groupby(windowed, :Participant)
+    grouped = groupby(windowed, [:Participant])
 
     # Add the means for each participant to the respective rows, the number of rows remains the same.
     # transformed = transform(grouped, [:AF7, :AF8] .=> mean .=> [:AF7_Mean, :AF8_Mean])
 
     # Alternatively, create a table with one row per participant, and their associated statistics.
-    # Out of these two options, I don't know which is correct. Both fail when doing the epoch analysis.
+    # Out of these two options, I don't know which is correct. Both fail when doing the epoch analysis within participant.
     combined = combine(
         grouped,
         [:AF7, :AF8] .=> mean .=> [:AF7_Mean, :AF8_Mean],
@@ -112,12 +125,10 @@ end
 function pairwise_correlation(
     means,
     interoceptive,
-    output,
-    prealloc_i;
+    output;
     i::Union{Float64, Nothing} = nothing,
     c::Union{Symbol, Nothing} = nothing,
     w::Union{Float64, Nothing} = nothing,
-    pp::Union{String7, Nothing} = nothing,
     e::Union{Int, Nothing} = nothing,
 )
 
@@ -131,7 +142,7 @@ function pairwise_correlation(
 
         cor = HypothesisTests.CorrelationTest(cols1_filtered, cols2_filtered)
 
-        if (cor.r ≈ 1.0 || cor.r ≈ -1.0 || isnan(cor.r) || cor.t ≈ Inf || cor.t ≈ -1.0 || cor.t ≈ 1.0)
+        if (cor.r ≈ 1.0 || cor.r ≈ -1.0 || isnan(cor.r) || cor.t ≈ Inf)
             # All the epoch correlations get caught here :(
             continue
         end
@@ -139,12 +150,13 @@ function pairwise_correlation(
         pvalue = HypothesisTests.pvalue(cor)
         (ci_lower, ci_higher) = HypothesisTests.confint(cor)
 
-        if (pp === nothing && e === nothing)
+        if (e === nothing) # If sliding window
 
-            output[prealloc_i[]] = CorTestResult(
+            output.vec[output.count] = CorTestResult(
                 Parameter1 = Parameter1,
                 Parameter2 = Parameter2,
                 r = cor.r,
+                abs_r = abs(cor.r),
                 time = i,
                 condition = c,
                 window_size = w,
@@ -157,11 +169,12 @@ function pairwise_correlation(
                 df_error = cor.n - 2, # n minus number of variables
             )
 
-        else
-            output[prealloc_i[]] = EpochCorTestResult(
+        else # If epoch analysis
+            output.vec[output.count] = EpochCorTestResult(
                 Parameter1 = Parameter1,
                 Parameter2 = Parameter2,
                 r = cor.r,
+                abs_r = abs(cor.r),
                 p = pvalue,
                 t = cor.t,
                 ci_lower = ci_lower,
@@ -169,12 +182,11 @@ function pairwise_correlation(
                 ci = 0.95,
                 n = cor.n,
                 df_error = cor.n - 2, # n minus number of variables
-                participant = pp,
                 epoch = e,
             )
         end
 
-        prealloc_i[] += 1
+        output.count += 1
 
     end
 end
@@ -186,45 +198,39 @@ function main(; epoch_analysis = false)
     df = load_csvs()
     println("CSVs loaded.")
 
-    prealloc_i::Threads.Atomic{Int} = Threads.Atomic{Int}(1) # Needed for multi-threading
+    conditions = [:HCT, :RestingState]
+    times = range(start = -0.4, stop = 0.8, step = 0.01)
 
     if (epoch_analysis)
-        epochs = filter(i -> i != 0, unique(df.epoch)) # Remove 0 because it's meaningless when used in a correlation
-        participants = unique(df.Participant)
+        epochs = unique(df.epoch)
+        epochs = epochs[epochs .!= 0] # Remove any 0 epochs
 
-        steps = length(participants) * length(epochs) * 50 # 50 correlations for each combination
+        steps = length(epochs) * length(conditions) * length(times) * 51 # 50 correlations for each combination, plus 1 for good luck
 
-        # Preallocate the vector
-        output = Vector{EpochCorTestResult}(undef, steps)
+        output = create_output_vec(steps, EpochCorTestResult)
 
-        Threads.@threads for pp in participants
-            for e in epochs
+        Threads.@threads for e in epochs
 
-                windowed = (@view df[df.Participant .== pp .&& df.epoch .<= e, :])
+            windowed = (@view df[df.epoch .<= e, :])
 
-                if (nrow(windowed) === 0)
-                    continue
-                end
-
-                (means, interoceptive) = prepare_variables(windowed)
-
-                pairwise_correlation(means, interoceptive, output, prealloc_i; pp = pp, e = e)
-
-                println("Thread $(Threads.threadid()): $pp, $e")
-
+            if (nrow(windowed) === 0)
+                continue
             end
+
+            (means, interoceptive) = prepare_variables(windowed)
+
+            pairwise_correlation(means, interoceptive, output[Threads.threadid()]; e = e)
+
+            println("Thread $(Threads.threadid()): $e")
         end
 
     else
 
         window_widths = range(start = 0.1, stop = 0.6, step = 0.1)
-        conditions = [:HCT, :RestingState]
-        times = range(start = -0.4, stop = 0.8, step = 0.01)
 
         steps = length(window_widths) * length(conditions) * length(times) * 51 # 50 correlations for each combination, plus 1 extra for good luck
 
-        # Preallocate the vector
-        output = Vector{CorTestResult}(undef, steps)
+        output = create_output_vec(steps, CorTestResult)
 
         # A w of 0.1 means 0.1 each side of the mean (total width 0.2)
         Threads.@threads for w in window_widths
@@ -239,7 +245,7 @@ function main(; epoch_analysis = false)
 
                 (means, interoceptive) = prepare_variables(windowed)
 
-                pairwise_correlation(means, interoceptive, output, prealloc_i; i = i, c = c, w = w)
+                pairwise_correlation(means, interoceptive, output[Threads.threadid()]; i = i, c = c, w = w)
 
                 println("Thread $(Threads.threadid()): $i, $w, ($(i - w), $(i + w)), $c")
             end
@@ -249,8 +255,10 @@ function main(; epoch_analysis = false)
     return output
 end
 
-@time output = main(epoch_analysis = false)
+@time output = main(epoch_analysis = true)
 
-output2 = [output[i] for i = 1:length(output) if isassigned(output, i)] # Remove any undef
+output2 = reduce(vcat, [inner.vec for inner in output])
 
-finaldf = DataFrame(output2)
+output3 = [output2[i] for i = 1:length(output2) if isassigned(output2, i)] # Remove any undef
+
+finaldf = DataFrame(output3)
