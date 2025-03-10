@@ -1,3 +1,4 @@
+using HTTP: Conditions
 using CSV, DataFrames, HTTP, HypothesisTests, Base.Threads, Statistics
 
 println(Threads.nthreads())
@@ -33,19 +34,8 @@ end
     n::Int = 0
     df_error::Int = 0
     epoch::Int = 0
+    condition::Symbol = Symbol()
 end
-
-"""
-Give each thread a vector to store its results, then we'll concat them at the end
-"""
-mutable struct InnerOutputVec{T}
-    vec::Vector{T}
-    count::Int
-
-    InnerOutputVec{T}(length) where {T} = new(Vector{T}(undef, cld(length, Threads.nthreads())), 1)
-end
-
-create_output_vec(length, T) = [InnerOutputVec{T}(length) for _ = 1:Threads.nthreads()]
 
 # Functions
 
@@ -92,7 +82,7 @@ end
 
 function prepare_variables(windowed)
 
-    grouped = groupby(windowed, [:Participant])
+    grouped = groupby(windowed, [:Participant, :epoch])
 
     # Add the means for each participant to the respective rows, the number of rows remains the same.
     # transformed = transform(grouped, [:AF7, :AF8] .=> mean .=> [:AF7_Mean, :AF8_Mean])
@@ -125,7 +115,8 @@ end
 function pairwise_correlation(
     means,
     interoceptive,
-    output;
+    output,
+    prealloc_i;
     i::Union{Float64, Nothing} = nothing,
     c::Union{Symbol, Nothing} = nothing,
     w::Union{Float64, Nothing} = nothing,
@@ -152,7 +143,7 @@ function pairwise_correlation(
 
         if (e === nothing) # If sliding window
 
-            output.vec[output.count] = CorTestResult(
+            output[prealloc_i[]] = CorTestResult(
                 Parameter1 = Parameter1,
                 Parameter2 = Parameter2,
                 r = cor.r,
@@ -170,7 +161,7 @@ function pairwise_correlation(
             )
 
         else # If epoch analysis
-            output.vec[output.count] = EpochCorTestResult(
+            output[prealloc_i[]] = EpochCorTestResult(
                 Parameter1 = Parameter1,
                 Parameter2 = Parameter2,
                 r = cor.r,
@@ -183,17 +174,18 @@ function pairwise_correlation(
                 n = cor.n,
                 df_error = cor.n - 2, # n minus number of variables
                 epoch = e,
+                condition = c,
             )
         end
 
-        output.count += 1
+        atomic_add!(prealloc_i, 1)
 
     end
 end
 
 # Main
 
-function main(; epoch_analysis = false)
+function main(; epoch_analysis = true)
 
     df = load_csvs()
     println("CSVs loaded.")
@@ -201,27 +193,31 @@ function main(; epoch_analysis = false)
     conditions = [:HCT, :RestingState]
     times = range(start = -0.4, stop = 0.8, step = 0.01)
 
+    prealloc_i::Threads.Atomic{Int} = Threads.Atomic{Int}(1)
+
     if (epoch_analysis)
         epochs = unique(df.epoch)
         epochs = epochs[epochs .!= 0] # Remove any 0 epochs
 
-        steps = length(epochs) * length(conditions) * length(times) * 51 # 50 correlations for each combination, plus 1 for good luck
+        steps = length(epochs) * length(conditions) * 51 # 50 correlations for each combination, plus 1 for good luck
 
-        output = create_output_vec(steps, EpochCorTestResult)
+        output = Vector{EpochCorTestResult}(undef, steps)
 
         Threads.@threads for e in epochs
+            for c in conditions
 
-            windowed = (@view df[df.epoch .<= e, :])
+                windowed = (@view df[df.epoch .<= e .&& df.Condition .=== c, :])
 
-            if (nrow(windowed) === 0)
-                continue
+                if (nrow(windowed) === 0)
+                    continue
+                end
+
+                (means, interoceptive) = prepare_variables(windowed)
+
+                pairwise_correlation(means, interoceptive, output, prealloc_i; e = e, c = c)
+
+                println("Thread $(Threads.threadid()): $e")
             end
-
-            (means, interoceptive) = prepare_variables(windowed)
-
-            pairwise_correlation(means, interoceptive, output[Threads.threadid()]; e = e)
-
-            println("Thread $(Threads.threadid()): $e")
         end
 
     else
@@ -230,7 +226,7 @@ function main(; epoch_analysis = false)
 
         steps = length(window_widths) * length(conditions) * length(times) * 51 # 50 correlations for each combination, plus 1 extra for good luck
 
-        output = create_output_vec(steps, CorTestResult)
+        output = Vector{CorTestResult}(undef, steps)
 
         # A w of 0.1 means 0.1 each side of the mean (total width 0.2)
         Threads.@threads for w in window_widths
@@ -245,7 +241,7 @@ function main(; epoch_analysis = false)
 
                 (means, interoceptive) = prepare_variables(windowed)
 
-                pairwise_correlation(means, interoceptive, output[Threads.threadid()]; i = i, c = c, w = w)
+                pairwise_correlation(means, interoceptive, output, prealloc_i; i = i, c = c, w = w)
 
                 println("Thread $(Threads.threadid()): $i, $w, ($(i - w), $(i + w)), $c")
             end
@@ -255,10 +251,8 @@ function main(; epoch_analysis = false)
     return output
 end
 
-@time output = main(epoch_analysis = true)
+@time output = main(epoch_analysis = false)
 
-output2 = reduce(vcat, [inner.vec for inner in output])
+output2 = [output[i] for i = 1:length(output) if isassigned(output, i)] # Remove any undef
 
-output3 = [output2[i] for i = 1:length(output2) if isassigned(output2, i)] # Remove any undef
-
-finaldf = DataFrame(output3)
+finaldf = DataFrame(output2)
