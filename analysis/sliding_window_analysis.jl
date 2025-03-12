@@ -1,4 +1,3 @@
-using HTTP: Conditions
 using CSV, DataFrames, HTTP, HypothesisTests, Base.Threads, Statistics
 
 println(Threads.nthreads())
@@ -42,9 +41,9 @@ end
 """
 Evaluate the iterator from `skipmissings` ahead of time in order to satisfy type checking.
 """
-function filter_missings(args...)
-    return collect.(skipmissings(args...))
-end
+filter_missings(args...) = collect.(skipmissings(args...))
+
+remove_undef(vec) = [vec[i] for i = 1:length(vec) if isassigned(vec, i)] # Remove any undef
 
 function load_csvs(first::Union{Int, Nothing} = nothing)
     csvs = filter(file -> contains(file, "data_hep"), readdir("data", join = true))
@@ -71,24 +70,31 @@ function load_csvs(first::Union{Int, Nothing} = nothing)
         names(interoprimals),
     )
 
-    joined = rightjoin(hepdata, interoprimals[!, filtered_cols], on = :Participant)
+    filtered_intero = (@view interoprimals[!, filtered_cols])
+
+    # Create a dataframe showing participants with any missing data. These pps are excluded.
+    global missings = filter(x -> any(ismissing, x), filtered_intero)
+    cols_to_remove = [col for col in names(missings) if all(!ismissing, missings[!, col])]
+    select!(missings, :Participant, Not(cols_to_remove))
+
+    joined = innerjoin(hepdata, filtered_intero, on = :Participant)
+    dropped = dropmissing(joined)
+
+    removed_missing = nrow(joined) - nrow(dropped)
+    println("$removed_missing time points with missing values omitted")
 
     if (first isa Int)
-        return first(joined, first)
+        return first(dropped, first)
     else
-        return joined
+        return dropped
     end
 end
 
 function prepare_variables(windowed)
 
+    # What do I groupby? Only participant has good r but bad p, Participant and epoch has bad r but good p!
     grouped = groupby(windowed, [:Participant, :epoch])
 
-    # Add the means for each participant to the respective rows, the number of rows remains the same.
-    # transformed = transform(grouped, [:AF7, :AF8] .=> mean .=> [:AF7_Mean, :AF8_Mean])
-
-    # Alternatively, create a table with one row per participant, and their associated statistics.
-    # Out of these two options, I don't know which is correct. Both fail when doing the epoch analysis within participant.
     combined = combine(
         grouped,
         [:AF7, :AF8] .=> mean .=> [:AF7_Mean, :AF8_Mean],
@@ -183,76 +189,85 @@ function pairwise_correlation(
     end
 end
 
+function sliding_window_analysis(df, conditions)
+    times = range(start = -0.4, stop = 0.8, step = 0.01)
+    window_widths = range(start = 0.05, stop = 0.5, step = 0.05)
+
+    steps = length(window_widths) * length(conditions) * length(times) * 51 # 50 correlations for each combination, plus 1 extra for good luck
+
+    output = Vector{CorTestResult}(undef, steps)
+    prealloc_i = Threads.Atomic{Int}(1)
+
+    # A w of 0.1 means 0.1 each side of the mean (total width 0.2)
+    Threads.@threads for w in window_widths
+        for c in conditions, i in times
+
+            if (i - w < -0.4)
+                continue
+            end
+
+            windowed = (@view df[(df.time .>= (i - w) .&& df.time .< (i + w)) .&& df.Condition .=== c, :])
+
+            if (nrow(windowed) === 0)
+                # println("Thread $(Threads.threadid()): SKIPPED $i, $c, $w")
+                continue
+            end
+
+            (means, interoceptive) = prepare_variables(windowed)
+
+            pairwise_correlation(means, interoceptive, output, prealloc_i; i = i, c = c, w = w)
+
+            println("Thread $(Threads.threadid()): $i, $w, ($(i - w), $(i + w)), $c")
+        end
+    end
+
+    global window_df = DataFrame(remove_undef(output))
+end
+
+function epoch_analysis(df, conditions)
+    epochs = unique(df.epoch)
+
+    steps = length(epochs) * length(conditions) * 51 # 50 correlations for each combination, plus 1 for good luck
+
+    output = Vector{EpochCorTestResult}(undef, steps)
+    prealloc_i = Threads.Atomic{Int}(1)
+
+    Threads.@threads for e in epochs
+        for c in conditions
+
+            windowed = (@view df[df.epoch .<= e .&& df.Condition .=== c, :])
+
+            if (nrow(windowed) === 0)
+                continue
+            end
+
+            (means, interoceptive) = prepare_variables(windowed)
+
+            pairwise_correlation(means, interoceptive, output, prealloc_i; e = e, c = c)
+
+            println("Thread $(Threads.threadid()): $e, $c")
+        end
+    end
+
+    global epoch_df = DataFrame(remove_undef(output))
+end
 # Main
 
-function main(; epoch_analysis = true)
+function main(; do_sliding_window = true, do_epoch_analysis = false)
 
     df = load_csvs()
     println("CSVs loaded.")
 
     conditions = [:HCT, :RestingState]
-    times = range(start = -0.4, stop = 0.8, step = 0.01)
 
-    prealloc_i::Threads.Atomic{Int} = Threads.Atomic{Int}(1)
-
-    if (epoch_analysis)
-        epochs = unique(df.epoch)
-        epochs = epochs[epochs .!= 0] # Remove any 0 epochs
-
-        steps = length(epochs) * length(conditions) * 51 # 50 correlations for each combination, plus 1 for good luck
-
-        output = Vector{EpochCorTestResult}(undef, steps)
-
-        Threads.@threads for e in epochs
-            for c in conditions
-
-                windowed = (@view df[df.epoch .<= e .&& df.Condition .=== c, :])
-
-                if (nrow(windowed) === 0)
-                    continue
-                end
-
-                (means, interoceptive) = prepare_variables(windowed)
-
-                pairwise_correlation(means, interoceptive, output, prealloc_i; e = e, c = c)
-
-                println("Thread $(Threads.threadid()): $e")
-            end
-        end
-
-    else
-
-        window_widths = range(start = 0.1, stop = 0.6, step = 0.1)
-
-        steps = length(window_widths) * length(conditions) * length(times) * 51 # 50 correlations for each combination, plus 1 extra for good luck
-
-        output = Vector{CorTestResult}(undef, steps)
-
-        # A w of 0.1 means 0.1 each side of the mean (total width 0.2)
-        Threads.@threads for w in window_widths
-            for c in conditions, i in times
-
-                windowed = (@view df[(df.time .> (i - w) .&& df.time .< (i + w)) .&& df.Condition .=== c, :])
-
-                if (nrow(windowed) === 0)
-                    # println("Thread $(Threads.threadid()): SKIPPED $i, $c, $w")
-                    continue
-                end
-
-                (means, interoceptive) = prepare_variables(windowed)
-
-                pairwise_correlation(means, interoceptive, output, prealloc_i; i = i, c = c, w = w)
-
-                println("Thread $(Threads.threadid()): $i, $w, ($(i - w), $(i + w)), $c")
-            end
-        end
+    if (do_sliding_window)
+        sliding_window_analysis(df, conditions)
     end
 
-    return output
+    if (do_epoch_analysis)
+        epoch_analysis(df, conditions)
+    end
+
 end
 
-@time output = main(epoch_analysis = false)
-
-output2 = [output[i] for i = 1:length(output) if isassigned(output, i)] # Remove any undef
-
-finaldf = DataFrame(output2)
+@time main(do_sliding_window = true, do_epoch_analysis = true)
