@@ -18,25 +18,26 @@ execute:
 #| warning: false
 
 library(tidyverse)
-library(easystats)
 library(patchwork)
 library(ggside)
 library(ggdist)
 library(dtwclust)
-library(foreach)
-library(doFuture)
 library(data.table)
-library(dtplyr)
-library(dplyr, warn.conflicts = FALSE)
-library(progressr)
-library(profvis)
-library(scales)
+# library(easystats)
+# library(foreach)
+# library(doFuture)
+# library(dtplyr)
+# library(dplyr, warn.conflicts = FALSE)
+# library(progressr)
+# library(profvis)
+# library(scales)
 
 plan(multisession, workers = 4)
 options(future.globals.maxSize = 9999 * 1024^2)
 handlers(global = TRUE)
 handlers("progress")
 
+# Wrapper around View() to easily view the first or last N rows of a table
 p_print <- function(df, n = 30L, mode = "head") {
     n <- pmin(n, nrow(df))
     if (mode == "head") {
@@ -58,7 +59,7 @@ wrap_text <- function(x, chars = 10) {
 #| code-fold: false
 
 files <- list.files("data/", pattern = "data_hep", full.name = TRUE)
-df <- do.call(rbind, lapply(files, fread))
+df <- rbindlist(lapply(files, fread))
 
 dfsub <- fread("https://raw.githubusercontent.com/RealityBending/InteroceptionPrimals/main/data/data_participants.csv") |>
     rename(Participant = "participant_id") |>
@@ -69,9 +70,8 @@ dffeat <- df |>
         by = "Participant"
     )
 
-
-output <- fread("correlations_julia.csv")
-epochs <- fread("epoch_correlations_julia.csv")
+output <- fread("analysis/sm_window_size_analysis/correlations_julia.csv")
+epochs <- fread("analysis/sm_window_size_analysis/epoch_correlations_julia.csv")
 
 ```
 
