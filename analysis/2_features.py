@@ -4,8 +4,9 @@ import neurokit2 as nk
 import numpy as np
 import pandas as pd
 
-files = [f for f in os.listdir("../data/") if f.startswith("data_hep")]
-df = pd.concat([pd.read_csv(f"../data/{f}", engine="c") for f in files])
+files = [f for f in os.listdir("./data/") if f.startswith("data_hep")]
+df = pd.concat([pd.read_csv(f"./data/{f}", engine="c") for f in files])
+print("CSVs loaded.")
 
 
 # persub = df.groupby(["Condition", "time"]).median(numeric_only=True).reset_index()
