@@ -1,6 +1,7 @@
 #=
-This file  loads the `data_hep*.csv` CSVs in `/data`, and pulls data from the `InteroceptionPrimals` repo, removes any missing/NA data, prints summary statistics on the data, and then performs the Window Size Analysis and the Epoch Analysis on them.  The results can be found in `tableB_window_size_analysis.csv` and `tableE_epoch_analysis.csv` respectively.
-
+This file  loads the `data_hep*.csv` CSVs in `/data` and pulls data from the `InteroceptionPrimals` repo.
+It then removes any missing/NA data, prints summary statistics on the data, and then performs the Window Size Analysis and the Epoch Analysis on them.
+The results can be found in `tableB_window_size_analysis.csv` and `tableE_epoch_analysis.csv` respectively.
 Graphing is done in `window_size_analysis_graphing.qmd`.
 =#
 
