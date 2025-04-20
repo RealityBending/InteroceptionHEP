@@ -1,5 +1,5 @@
---
-title: "Analysis"
+---
+title: "Window Size Analysis Graphs"
 editor: source
 editor_options:
   chunk_output_type: console
@@ -8,14 +8,13 @@ format:
     code-fold: true
     self-contained: false
 execute:
-  cache: true
+  cache: false
 ---
 
-## Packages
+This R file loads the CSVs output from the Window Size Analysis and Epoch Analysis in `window_size_analysis.jl`, and plots them. See `./figs` and `./appendices` for the output graphs.
 
+## Setup
 ```{r}
-#| message: false
-#| warning: false
 
 library(tidyverse)
 library(patchwork)
@@ -23,19 +22,11 @@ library(ggside)
 library(ggdist)
 library(dtwclust)
 library(data.table)
-# library(easystats)
-# library(foreach)
-# library(doFuture)
-# library(dtplyr)
-# library(dplyr, warn.conflicts = FALSE)
-# library(progressr)
-# library(profvis)
-# library(scales)
+library(ggtext)
+library(ggridges)
+library(viridis)
 
-plan(multisession, workers = 4)
-options(future.globals.maxSize = 9999 * 1024^2)
-handlers(global = TRUE)
-handlers("progress")
+## Utility functions
 
 # Wrapper around View() to easily view the first or last N rows of a table
 p_print <- function(df, n = 30L, mode = "head") {
@@ -52,11 +43,13 @@ wrap_text <- function(x, chars = 10) {
     x <- gsub("_", " ", x)
     stringr::str_wrap(x, chars)
 }
-```
+
+# Helper to work around float equality weirdness
+is_window_size <- function(target, float) {
+    target >= float - 0.001 & target <= float + 0.001
+}
 
 ## Data Preparation
-```{r}
-#| code-fold: false
 
 files <- list.files("data/", pattern = "data_hep", full.name = TRUE)
 df <- rbindlist(lapply(files, fread))
@@ -70,12 +63,306 @@ dffeat <- df |>
         by = "Participant"
     )
 
-output <- fread("analysis/sm_window_size_analysis/correlations_julia.csv")
-epochs <- fread("analysis/sm_window_size_analysis/epoch_correlations_julia.csv")
+output <- fread("analysis/sm_window_size_analysis/tables/tableB_window_size_analysis.csv")
+epochs <- fread("analysis/sm_window_size_analysis/tables/tableE_epoch_analysis.csv")
+
+included_measures <- c("MAIA_EmotionalAwareness", "MAIA_BodyListening", "MAIA_Noticing", "MAIA_AttentionRegulation", "IAS_Total", "HCT_Awareness", "HCT_Accuracy", "HCT_Sensibility")
 
 ```
 
-## Grand Average
+## Graphing (from julia data)
+
+### Fig 1. Overview plot
+```{r}
+make_corr_plot <- function(df, window) {
+    pretty_time <- window * 2 * 1000 # full window size in ms
+
+    plot <- df |>
+        filter(
+            Parameter2 %in% included_measures, # Keep only selected measures
+            window_size >= window - 0.001 & window_size <= window + 0.001
+        ) |>
+        mutate(
+            sig = ifelse(p < .05, "Sig", "Nonsig"),
+            sig2 = ifelse(p < .05, "Sig2", "Nonsig2"),
+            condition = str_replace(condition, "RestingState", "RS"),
+            Parameter2 = str_replace(Parameter2, "MAIA_BodyListening", "MAIA_Body_Listening"),
+            Parameter2 = str_replace(Parameter2, "MAIA_EmotionalAwareness", "MAIA_Emotional_Awareness"),
+            Parameter2 = str_replace(Parameter2, "MAIA_AttentionRegulation", "MAIA_Attention_Regulation")
+        ) |>
+        ggplot(aes(x = time, y = r)) +
+        geom_hline(yintercept = 0) +
+        geom_vline(xintercept = 0, color = "grey") +
+        geom_ribbon(aes(ymin = ci_lower, ymax = ci_higher, fill = condition), alpha = 0.1) +
+        geom_line(aes(alpha = sig2, group = condition), color = "#000000", linewidth = 1.2) +
+        geom_line(aes(color = condition, group = condition, alpha = sig), linewidth = 1) +
+        scale_alpha_manual(values = c("Sig" = 1, "Nonsig" = 0.4, "Sig2" = 1, "Nonsig2" = 0), guide = "none") +
+        scale_colour_viridis_d(begin = 0.1, end = 0.8, option = "turbo", aesthetics = c("colour", "fill"), direction = -1) +
+        scale_x_continuous(
+            breaks = c(-0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8),
+            labels = c("-400", "-200", "0", "200", "400", "600", "800"),
+            limits = c(-0.4, 0.8)
+        ) +
+        facet_grid(Parameter2 ~ Parameter1, switch = "y", labeller = as_labeller(wrap_text)) +
+        theme_minimal() +
+        theme(
+            plot.title = element_text(face = "bold", hjust = 0.5),
+            axis.title.y = element_text(face = "italic"),
+            strip.clip = "off"
+        ) +
+        labs(
+            title = paste0("Window width: ", pretty_time, "ms"),
+            x = "Time (ms)",
+            color = "Condition",
+            fill = "Condition"
+        )
+
+    if (window >= (0.2 - 0.001) && window <= (0.2 + 0.001)) {
+        plot <- plot + theme(
+            panel.spacing.y = unit(1.2, "lines")
+        )
+    }
+
+    if (window >= (0.05 - 0.001) && window <= (0.05 + 0.001)) {
+        plot <- plot + theme(
+            panel.spacing.x = unit(1.3, "lines")
+        )
+    }
+
+    plot
+}
+
+plots <- list()
+
+windows <- unique(output$window_size) |> sort()
+for (w in seq_along(windows)) {
+    plots[[w]] <- make_corr_plot(output, windows[w])
+}
+
+patched <- plots |>
+    patchwork::wrap_plots() +
+    patchwork::plot_layout(guides = "collect") +
+    plot_annotation(tag_levels = "A")
+
+ggsave(file = "patched_plot.png", plot = patched, width = 18, height = 65, dpi = 320, limitsize = FALSE)
+```
+
+### Fig 2. Significance histogram
+```{r}
+
+plots <- list()
+
+in_200 <- output |>
+    filter(
+        window_size >= 0.1 - 0.001 &
+            window_size <= 0.1 + 0.001
+    )
+
+significant_200 <- in_200 |>
+    filter(p < 0.05)
+
+time_count_200 <- significant_200 |>
+    group_by(time) |>
+    summarize(count = n())
+
+windows <- unique(output$window_size) |> sort()
+for (w in seq_along(windows)) {
+    in_window <- output |>
+        filter(
+            window_size >= windows[w] - 0.001 &
+                window_size <= windows[w] + 0.001
+        )
+
+    significant <- in_window |>
+        filter(p < 0.05)
+
+    by_time <- significant |>
+        group_by(time) |>
+        summarize(count = n())
+
+    ratio <- round(nrow(significant) / nrow(in_window) * 100, digits = 3)
+    pretty_time <- windows[w] * 2 * 1000 # full window size in ms
+
+    pretty_signif <- paste0("*p* < .05 in ", nrow(significant), " / ", nrow(in_window), " (", ratio, "%)")
+
+    plots[[w]] <- significant |>
+        ggplot(aes(x = time)) +
+        geom_vline(xintercept = 0, alpha = 0.5) +
+        geom_histogram(binwidth = 0.01, alpha = 0.9) +
+        geom_line(data = time_count_200, aes(x = time, y = count), color = "red") +
+        scale_x_continuous(
+            breaks = c(-0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8),
+            labels = c("-400", "-200", "0", "200", "400", "600", "800")
+        ) +
+        scale_y_continuous(breaks = seq.int(from = 0, to = 15, by = 3), limits = c(0, 15)) +
+        theme_bw() +
+        theme(
+            plot.title = element_text(face = "bold"),
+            plot.subtitle = ggtext::element_markdown()
+        ) +
+        labs(
+            title = paste0("Window width: ", pretty_time, "ms"),
+            subtitle = pretty_signif,
+            x = "Time (ms)",
+            y = "Frequency"
+        )
+
+    if (windows[w] >= (0.1 - 0.001) && windows[w] <= (0.1 + 0.001)) {
+        plots[[w]] <- plots[[w]] +
+            annotate("rect",
+                fill = "red", alpha = 0.2,
+                xmin = 0.51 - windows[w], xmax = 0.51 + windows[w],
+                ymin = -Inf, ymax = Inf
+            ) +
+            annotate("text",
+                x = 0.51, y = c(2.5, 1),
+                label = c("After R‐peak, late", "(410ms – 610ms)"), size = 3.5, color = "white"
+            ) +
+            annotate("rect",
+                fill = "green", alpha = 0.2,
+                xmin = -0.125 - windows[w], xmax = -0.125 + windows[w],
+                ymin = -Inf, ymax = Inf
+            ) +
+            annotate("text",
+                x = -0.125, y = c(2.5, 1),
+                label = c("Before R‐peak", "(−225ms – −25ms)"), size = 3.5, color = "white"
+            ) +
+            annotate("rect",
+                fill = "blue", alpha = 0.2,
+                xmin = 0.125 - windows[w], xmax = 0.125 + windows[w],
+                ymin = -Inf, ymax = Inf
+            ) +
+            annotate("text",
+                x = 0.125, y = c(2.5, 1),
+                label = c("After R‐peak, early", "(25ms – 225ms)"), size = 3.5, color = "white"
+            )
+    }
+}
+
+patched <- plots |>
+    patchwork::wrap_plots(ncol = 1, axis_titles = "collect") +
+    plot_annotation(tag_levels = "A")
+
+ggsave(plot = patched, file = "significance_hist2.png", width = 10, height = 16, dpi = 320)
+```
+
+### Fig 3. Coefficient density plot
+```{r}
+
+plots <- list()
+for (w in seq_along(windows)) {
+    pretty_time <- windows[w] * 2 * 1000 # full window size in ms
+
+    in_window <- output |>
+        #   group_by(Parameter1, Parameter2) |>
+        filter(
+            window_size >= windows[w] - 0.001 &
+                window_size <= windows[w] + 0.001
+        )
+
+    mean_r <- mean(abs(in_window$r)) |> round(digits = 3)
+    sd_r <- sd(in_window$r) |> round(digits = 3)
+
+    plots[[w]] <- in_window |>
+        ggplot(aes(x = abs(r))) +
+        geom_density(alpha = 0.9) +
+        scale_x_continuous(breaks = c(-0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8)) +
+        theme_bw() +
+        theme(
+            plot.title = element_text(face = "bold"),
+            plot.subtitle = ggtext::element_markdown(),
+            axis.title.x = ggtext::element_markdown()
+        ) +
+        labs(
+            title = paste0("Window width: ", pretty_time, "ms"),
+            subtitle = paste0("Mean *r*: ", mean_r, ", *SD*: ", sd_r),
+            x = "|*r*|",
+            y = "Density"
+        )
+}
+
+patched <- plots |>
+    patchwork::wrap_plots() +
+    plot_annotation(tag_levels = "A")
+
+ggsave(plot = patched, file = "correlation_density.png", dpi = 320, width = 9, height = 7)
+```
+
+### Fig 4. Epoch graph
+
+```{r}
+pretty_region <- function(region) {
+    region_map <- c(
+        "before" = "Before the R-peak (-225ms – -25ms)",
+        "after_early" = "After the R-peak, early (25ms – 225ms)",
+        "after_late" = "After the R-peak, late (410ms – 610ms)"
+    )
+    region_map[[region]]
+}
+
+make_epoch_graph <- function(df, region) {
+    plot <- df |>
+        filter(
+            Parameter2 %in% included_measures, # Keep only selected measures
+            name == region
+        ) |>
+        mutate(
+            Parameter2 = str_replace(Parameter2, "MAIA_BodyListening", "MAIA_Body_Listening"),
+            Parameter2 = str_replace(Parameter2, "MAIA_EmotionalAwareness", "MAIA_Emotional_Awareness"),
+            Parameter2 = str_replace(Parameter2, "MAIA_AttentionRegulation", "MAIA_Attention_Regulation"),
+            Parameter1 = gsub("_", " ", as.character(Parameter1)),
+            Parameter2 = gsub("_", " ", as.character(Parameter2)),
+            condition = str_replace(condition, "RestingState", "RS"),
+            group = paste(Parameter1, Parameter2, sep = " ~ "),
+            alpha = ifelse(p < .05, "Sig", "Nonsig"),
+            alpha2 = ifelse(p < .05, "Sig1", "Nonsig1"),
+        ) |>
+        ggplot(aes(x = epoch, y = r)) +
+        geom_hline(yintercept = 0, alpha = 0.5) +
+        geom_vline(xintercept = 0, alpha = 0.5) +
+        geom_ribbon(aes(ymin = ci_lower, ymax = ci_higher, fill = condition), alpha = 0.1) +
+        geom_point(aes(alpha = alpha2), color = "#000000", size = 1.1) +
+        geom_point(aes(color = condition, group = condition, alpha = alpha), size = 0.5) +
+        facet_grid(Parameter2 ~ Parameter1, switch = "y", labeller = as_labeller(wrap_text)) +
+        scale_alpha_manual(values = c("Sig" = 1, "Nonsig" = 0.3, "Sig1" = 1, "Nonsig1" = 0), guide = "none") +
+        scale_colour_viridis_d(begin = 0.1, end = 0.8, option = "turbo", aesthetics = c("colour", "fill"), direction = -1) +
+        scale_x_continuous(breaks = seq.int(from = 0, to = 900, by = 100)) +
+        guides(fill = guide_legend("Condition"), color = guide_legend("Condition", override.aes = list(size = 10))) +
+        theme_minimal() +
+        theme(
+            text = element_text(size = 20),
+            legend.text = element_text(size = 11),
+            axis.title.y = element_text(face = "italic"),
+            plot.title = ggtext::element_markdown()
+        ) +
+        labs(
+            x = "Epochs",
+            y = "r",
+            title = pretty_region(region)
+        )
+
+    if (region == "after_late" || region == "after_early") {
+        plot <- plot + theme(
+            panel.spacing.y = unit(1.3, "lines")
+        )
+    }
+
+    plot
+}
+
+plots <- list()
+for (region in c("before", "after_early", "after_late")) {
+    plots <- append(plots, list(make_epoch_graph(epochs, region)))
+}
+
+patched <- wrap_plots(plots, ncol = 2) +
+    plot_annotation(tag_levels = "A") +
+    patchwork::plot_layout(guides = "collect")
+
+ggsave(file = "patched_epoch_plot.png", plot = patched, width = 30, height = 100, dpi = 320, limitsize = FALSE)
+```
+
+## Grand average (unused)
 ```{r}
 dfavsub <- df |>
     summarize(AF7 = mean(AF7), AF8 = mean(AF8), .by = c("Participant", "Condition", "time")) |>
@@ -108,285 +395,4 @@ p1 <- dfavsub |>
     ) +
     labs(title = "Heartbeat Evoked Potentials", x = "Time")
 p1
-```
-
-## Graphing (from julia data)
-```{r}
-make_corr_plot <- function(df, window) {
-    pretty_time <- window * 2 * 1000 # full window size in ms
-
-    plot <- df |>
-        filter(Parameter2 %in% c("MAIA_EmotionalAwareness", "MAIA_BodyListening", "MAIA_Noticing", "MAIA_AttentionRegulation", "IAS_Total")) |> # Keep only the top 10 measures
-        filter(window_size >= window - 0.001 & window_size <= window + 0.001) |>
-        mutate(sig = ifelse(p < .05, "Sig", "Nonsig"), sig2 = ifelse(p < .05, "Sig2", "Nonsig2")) |>
-        mutate(condition = str_replace(condition, "RestingState", "RS")) |>
-        ggplot(aes(x = time, y = r)) +
-        geom_hline(yintercept = 0) +
-        geom_vline(xintercept = 0, color = "grey") +
-        geom_ribbon(aes(ymin = ci_lower, ymax = ci_higher, fill = condition), alpha = 0.075) +
-        geom_line(aes(alpha = sig2, group = condition), color = "#000000", linewidth = 1.2) +
-        geom_line(aes(color = condition, group = condition, alpha = sig), linewidth = 1) +
-        scale_alpha_manual(values = c("Sig" = 1, "Nonsig" = 0.4, "Sig2" = 1, "Nonsig2" = 0), guide = "none") +
-        scale_x_continuous(breaks = c(-0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8)) +
-        facet_grid(Parameter2 ~ Parameter1, switch = "y", labeller = as_labeller(wrap_text)) +
-        theme_minimal() +
-        theme(
-            plot.title = element_text(face = "bold", hjust = 0.5),
-            # panel.spacing.x = unit(1.2, "lines"),
-            # panel.spacing.y = unit(1.2, "lines"),
-            strip.clip = "off"
-        ) +
-        labs(
-            title = paste0("Window width: ", pretty_time, "ms"),
-            x = "Time",
-            color = "Condition",
-            fill = "Condition"
-        )
-
-    if (window >= (0.2 - 0.001) && window <= (0.2 + 0.001)) {
-        plot <- plot + theme(
-            panel.spacing.y = unit(1.2, "lines")
-        )
-    }
-
-    if (window >= (0.05 - 0.001) && window <= (0.05 + 0.001)) {
-        plot <- plot + theme(
-            panel.spacing.x = unit(1.2, "lines")
-        )
-    }
-
-    # ggsave(file = paste0("corr_plot", window, ".png"), plot = plot, width = 12, height = 18, dpi = 320)
-    plot
-}
-
-plots <- list()
-
-windows <- unique(output$window_size) |> sort()
-for (w in seq_along(windows)) {
-    plots[[w]] <- make_corr_plot(output, windows[w])
-}
-
-patched <- plots |>
-    patchwork::wrap_plots() +
-    patchwork::plot_layout(guides = "collect")
-
-ggsave(file = "patched_plot.png", plot = patched, width = 18, height = 22, dpi = 320, limitsize = FALSE)
-```
-
-```{r}
-plots <- list()
-for (w in seq_along(windows)) {
-    # print(w)
-    pretty_time <- windows[w] * 2 * 1000 # full window size in ms
-
-    in_window <- output |>
-        #   group_by(Parameter1, Parameter2) |>
-        filter(
-            window_size >= windows[w] - 0.001 &
-                window_size <= windows[w] + 0.001
-        )
-
-    significant <- in_window |>
-        filter(p < 0.05)
-
-    ratio <- round(nrow(significant) / nrow(in_window) * 100, digits = 3)
-
-    pretty_signif <- paste0("p < .05 in ", nrow(significant), " / ", nrow(in_window), " (", ratio, "%)")
-
-    plots[[w]] <- significant |>
-        ggplot(aes(x = time)) +
-        geom_histogram(binwidth = 0.01, alpha = 0.9) +
-        scale_x_continuous(breaks = c(-0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8)) +
-        theme_bw() +
-        theme(
-            plot.title = element_text(face = "bold")
-        ) +
-        labs(
-            title = paste0("Window width: ", pretty_time, "ms"),
-            subtitle = pretty_signif,
-            x = "Time",
-            y = "Frequency"
-        )
-}
-
-patched <- plots |>
-    patchwork::wrap_plots()
-patched
-
-ggsave(plot = patched, file = "significance_frequency.png", dpi = 320)
-```
-
-```{r}
-plots <- list()
-for (w in seq_along(windows)) {
-    # print(w)
-    pretty_time <- windows[w] * 2 * 1000 # full window size in ms
-
-    in_window <- output |>
-        #   group_by(Parameter1, Parameter2) |>
-        filter(
-            window_size >= windows[w] - 0.001 &
-                window_size <= windows[w] + 0.001
-        )
-
-    mean_r <- mean(in_window$r) |> round(digits = 3)
-    sd_r <- sd(in_window$r) |> round(digits = 3)
-
-    plots[[w]] <- in_window |>
-        ggplot(aes(x = r)) +
-        geom_density(alpha = 0.9) +
-        scale_x_continuous(breaks = c(-0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8)) +
-        theme_bw() +
-        theme(
-            plot.title = element_text(face = "bold")
-        ) +
-        labs(
-            title = paste0("Window width: ", pretty_time, "ms"),
-            subtitle = paste0("Mean r: ", mean_r, " SD: ", sd_r),
-            x = "r",
-            y = "Density"
-        )
-}
-
-patched <- plots |>
-    patchwork::wrap_plots()
-patched
-
-ggsave(plot = patched, file = "correlation_density.png", dpi = 320)
-```
-
-
-
-```{r}
-make_epoch_graph <- function(df) {
-    plot <- df |>
-        mutate(group = paste(Parameter1, Parameter2, sep = " ~ "), alpha = ifelse(p < .05, "Sig", "Nonsig")) |>
-        ggplot(aes(x = epoch, y = r, colour = group, alpha = alpha)) +
-        geom_hline(yintercept = 0) +
-        geom_vline(xintercept = 0, color = "grey") +
-        geom_point(size = 0.5) +
-        scale_alpha_manual(values = c("Sig" = 1, "Nonsig" = 0.1), guide = "none") +
-        guides(color = guide_legend(ncol = 2)) +
-        theme_minimal() +
-        labs(title = "Epoch Correlations")
-
-    ggsave(file = paste0("epoch_plot.png"), plot = plot, width = 24, height = 12, dpi = 300)
-}
-
-make_epoch_graph(epochs)
-```
-
-## Correlations (old R versions; ignore)
-
-### Synchronous version
-```{r}
-
-window_size <- seq(from = 0.1, to = 1.0, by = 0.1)
-
-unique_condition <- unique(dffeat$Condition)
-unique_time <- unique(dffeat$time)
-
-steps <- length(unique_time) * length(unique_condition) * length(window_size)
-
-corr_test <- function() {
-    count <- 1
-    templist <- vector("list", steps)
-
-    for (w in window_size) {
-        print(w)
-        for (c in unique_condition) {
-            print(c)
-            for (i in unique_time) {
-                windowed <- dffeat |>
-                    lazy_dt() |>
-                    group_by(Participant) |> # I don't know why we need to group by Pp, but the correlation returns NA if we don't?
-                    filter((time > (i - w) & time < (i + w)) & Condition == c) |>
-                    mutate(AF7_Mean = mean(AF7), AF8_Mean = mean(AF8)) |>
-                    ungroup() |> # Correlation also returns NA if we don't ungroup
-                    as.data.table()
-
-                r <- correlation(
-                    select(windowed, AF7_Mean, AF8_Mean), # Correlate the AF7/8 means
-                    select(windowed, starts_with("MAIA"), starts_with("IAS"), starts_with("HRV"), starts_with("HCT")), # With the interoceptive measures
-                    p_adjust = "none"
-                ) |>
-                    mutate(time = i, condition = c, window_size = w)
-
-                windowed <- NULL
-
-                templist[[count]] <- r
-
-                r <- NULL
-
-                # See what iteration we're on because this is slow af
-                print(paste(count, steps, sep = "/"))
-                count <- count + 1
-            }
-        }
-    }
-    rbindlist(templist)
-}
-# p_print(corr_test())
-
-output <- corr_test()
-# p_print(output, n=300)
-
-profvis(output <- corr_test(), interval = 0.005)
-```
-
-### Parallel version
-```{r}
-
-window_size <- seq(from = 0.1, to = 1.0, by = 0.1)
-
-output <- data.table()
-
-unique_condition <- unique(dffeat$Condition)
-unique_time <- unique(dffeat$time)
-
-steps <- (length(unique_time) * length(unique_condition) * length(window_size))
-
-corr_calc <- function() {
-    p <- progressor(steps = steps)
-    templist <- vector("list", steps)
-
-    templist <- foreach(w = window_size, .combine = c, .inorder = FALSE) %dofuture% {
-        count <- 1
-
-        for (c in unique_condition) {
-            for (i in unique_time) {
-                windowed <- dffeat |>
-                    lazy_dt() |>
-                    group_by(Participant) |> # I don't know why we need to group by Pp, but the correlation returns NA if we don't?
-                    filter((time > (i - w) & time < (i + w)) & Condition == c) |>
-                    mutate(AF7_Mean = mean(AF7), AF8_Mean = mean(AF8)) |>
-                    ungroup() |> # Correlation also returns NA if we don't ungroup
-                    as.data.table()
-
-                r <- correlation(
-                    select(windowed, AF7_Mean, AF8_Mean), # Correlate the AF7/8 means
-                    select(windowed, starts_with("MAIA"), starts_with("IAS"), starts_with("HRV"), starts_with("HCT")), # With the interoceptive measures
-                    p_adjust = "none"
-                ) |>
-                    mutate(time = i, condition = c, window_size = w)
-
-                windowed <- NULL
-                templist[[count]] <- r
-
-                r <- NULL
-                gc()
-
-                count <- count + 1
-                p(message = paste(w, c, i, sep = ", "))
-            }
-        }
-
-        templist
-    }
-    output <- rbindlist(output)
-}
-
-with_progress(output2 <- corr_calc())
-
-p_print(output, n = 300)
 ```

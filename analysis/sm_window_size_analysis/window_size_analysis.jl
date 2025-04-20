@@ -1,3 +1,9 @@
+#=
+This file  loads the `data_hep*.csv` CSVs in `/data`, and pulls data from the `InteroceptionPrimals` repo, removes any missing/NA data, prints summary statistics on the data, and then performs the Window Size Analysis and the Epoch Analysis on them.  The results can be found in `tableB_window_size_analysis.csv` and `tableE_epoch_analysis.csv` respectively.
+
+Graphing is done in `window_size_analysis_graphing.qmd`.
+=#
+
 using CSV, DataFrames, HTTP, HypothesisTests, Base.Threads, Statistics, DataStructures
 
 println(Threads.nthreads())
@@ -7,7 +13,6 @@ println(Threads.nthreads())
     Parameter1::Symbol = Symbol()
     Parameter2::Symbol = Symbol()
     r::Float64 = 0.0
-    abs_r::Float64 = 0.0
     time::Float64 = 0.0
     condition::Symbol = Symbol()
     window_size::Float64 = 0.0
@@ -15,7 +20,7 @@ println(Threads.nthreads())
     t::Float64 = 0.0
     ci_lower::Float64 = 0.0
     ci_higher::Float64 = 0.0
-    ci::Float64 = 0.0
+    ci::Float64 = 0.95
     n::Int = 0
     df_error::Int = 0
 end
@@ -24,15 +29,16 @@ end
     Parameter1::Symbol = Symbol()
     Parameter2::Symbol = Symbol()
     r::Float64 = 0.0
-    abs_r::Float64 = 0.0
     p::Float64 = 0.0
     t::Float64 = 0.0
     ci_lower::Float64 = 0.0
     ci_higher::Float64 = 0.0
-    ci::Float64 = 0.0
+    ci::Float64 = 0.95
     n::Int = 0
     df_error::Int = 0
     epoch::Int = 0
+    condition::Symbol = Symbol()
+    name::Symbol = Symbol()
 end
 
 struct EpochStats
@@ -49,6 +55,7 @@ struct AgeStats
     std::Float64
     vec::Vector{Union{Int, Missing}}
 end
+
 struct PPStats
     included::Vector{String7}
     included_count::Int
@@ -69,7 +76,7 @@ end
 # Functions
 
 """
-Evaluate the iterator from `skipmissings` ahead of time in order to satisfy type checking.
+Eagerly evaluate the iterator from `skipmissings` in order to satisfy type checking.
 """
 filter_missings(args...) = collect.(skipmissings(args...))
 
@@ -154,7 +161,6 @@ end
 
 function prepare_variables(windowed)
 
-    # What do I groupby? Only participant has good r but bad p, Participant and epoch has bad r but good p!
     time_grouped = groupby(windowed, [:time, :Participant])
 
     time_combined = combine(
@@ -207,6 +213,7 @@ function pairwise_correlation(
     c::Union{Symbol, Nothing} = nothing,
     w::Union{Float64, Nothing} = nothing,
     e::Union{Int, Nothing} = nothing,
+    name::Union{Symbol, Nothing} = nothing,
 )
 
     for (Parameter1, cols1) in pairs(means_medians)
@@ -234,7 +241,6 @@ function pairwise_correlation(
                     Parameter1 = Parameter1,
                     Parameter2 = Parameter2,
                     r = cor.r,
-                    abs_r = abs(cor.r),
                     time = i,
                     condition = c,
                     window_size = w,
@@ -252,7 +258,6 @@ function pairwise_correlation(
                     Parameter1 = Parameter1,
                     Parameter2 = Parameter2,
                     r = cor.r,
-                    abs_r = abs(cor.r),
                     p = pvalue,
                     t = cor.t,
                     ci_lower = ci_lower,
@@ -261,6 +266,8 @@ function pairwise_correlation(
                     n = cor.n,
                     df_error = cor.n - 2, # n minus number of variables
                     epoch = e,
+                    condition = c,
+                    name = name,
                 )
             end
 
@@ -270,18 +277,16 @@ function pairwise_correlation(
     end
 end
 
-function sliding_window_analysis(df)
+function sliding_window_analysis(df, conditions)
     # 0.05 means 0.05 each side of the time point (total width 0.1)
     # Times are fractions of seconds, so 0.05 = 50ms
     window_widths = range(start = 0.05, stop = 0.2, step = 0.025)
-    conditions = [:HCT, :RestingState]
     times = range(start = -0.4, stop = 0.8, step = 0.01)
 
-    steps = length(window_widths) * length(conditions) * length(times) * 102 # 100 correlations for each combination, plus 2 for good luck
+    steps = length(window_widths) * length(conditions) * length(times) * 52 # 50 correlations for each combination, plus 2 for good luck
 
     output = Vector{CorTestResult}(undef, steps)
     prealloc_i = Threads.Atomic{Int}(1)
-
 
     Threads.@threads for w in window_widths
         for c in conditions
@@ -310,31 +315,39 @@ function sliding_window_analysis(df)
     global window_df = DataFrame(remove_undef(output))
 end
 
-function epoch_analysis(df)
+function epoch_analysis(df, conditions)
     global epstats = epoch_stats(df)
 
     epochs = 1:(epstats.max_count)
 
-    steps = length(epochs) * 102 # 50 correlations for each combination, plus 2 for good luck
+    before = df[(df.time .>= -0.225 .&& df.time .< -0.025), :]
+    after_early = df[(df.time .>= 0.025 .&& df.time .< 0.225), :]
+    after_late = df[(df.time .>= 0.410 .&& df.time .< 0.620), :]
+
+    dfs = (before = before, after_early = after_early, after_late = after_late)
+
+    steps = length(epochs) * length(conditions) * length(dfs) * 52  # 50 correlations for each combination, plus 2 for good luck
 
     output = Vector{EpochCorTestResult}(undef, steps)
     prealloc_i = Threads.Atomic{Int}(1)
 
     Threads.@threads for e in epochs
+        for (name, df) in pairs(dfs)
+            for c in conditions
 
-        windowed = (@view df[df.epoch .<= e, :])
+                windowed = (@view df[df.epoch .<= e .&& df.Condition .=== c, :])
 
-        if (nrow(windowed) === 0)
-            continue
+                if (nrow(windowed) === 0)
+                    continue
+                end
+
+                (means_medians, interoceptive) = prepare_variables(windowed)
+
+                pairwise_correlation(means_medians, interoceptive, output, prealloc_i; e = e, c = c, name = name)
+
+                println("Thread $(Threads.threadid()): $e, $c, $name")
+            end
         end
-
-        (means_medians, interoceptive) = prepare_variables(windowed)
-
-        pairwise_correlation(means_medians, interoceptive, output, prealloc_i; e = e)
-
-        println("Thread $(Threads.threadid()): $e")
-
-
     end
     global epoch_df = DataFrame(remove_undef(output))
 end
@@ -349,6 +362,11 @@ function significance_analysis()
     global condition_significance_count =
         combine(groupby(significant, [:Parameter1, :Parameter2, :condition]), nrow => :count)
     global total_condition_significance = combine(groupby(significant, [:condition]), nrow => :count)
+
+    by_window = groupby(window_df, :window_size)
+
+    abs_mean(x) = mean(abs.(x))
+    global abs_mean_correlations = combine(by_window, :r => abs_mean, :r => std)
 end
 
 # Main
@@ -358,17 +376,19 @@ function main(; do_sliding_window, do_epoch_analysis)
     df = load_csvs()
     println("CSVs loaded.")
 
+    conditions = [:HCT, :RestingState]
+
     if (do_sliding_window)
-        sliding_window_analysis(df)
+        sliding_window_analysis(df, conditions)
         CSV.write("correlations_julia.csv", window_df)
         significance_analysis()
     end
 
     if (do_epoch_analysis)
-        epoch_analysis(df)
+        epoch_analysis(df, conditions)
         CSV.write("epoch_correlations_julia.csv", epoch_df)
     end
 
 end
 
-@time main(do_sliding_window = true, do_epoch_analysis = false)
+@time main(do_sliding_window = true, do_epoch_analysis = true)
