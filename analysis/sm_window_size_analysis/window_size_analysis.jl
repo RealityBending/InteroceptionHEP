@@ -83,7 +83,7 @@ filter_missings(args...) = collect.(skipmissings(args...))
 
 remove_undef(vec) = [vec[i] for i = 1:length(vec) if isassigned(vec, i)] # Remove any undef
 
-function load_csvs(first::Union{Int, Nothing} = nothing)
+function load_csvs(first_n::Union{Int, Nothing} = nothing)
     csvs = filter(file -> contains(file, "data_hep"), readdir("data", join = true))
     hepdata = reduce(
         vcat,
@@ -119,8 +119,8 @@ function load_csvs(first::Union{Int, Nothing} = nothing)
 
     summary_stats(filtered_intero, nomissing, pp_population_stats, hepdata)
 
-    if (first isa Int)
-        return first(nomissing, first)
+    if (first_n isa Int)
+        return first(nomissing, first_n)
     else
         return nomissing
     end

@@ -25,6 +25,7 @@ library(data.table)
 library(ggtext)
 library(ggridges)
 library(viridis)
+library(datawizard)
 
 ## Utility functions
 
