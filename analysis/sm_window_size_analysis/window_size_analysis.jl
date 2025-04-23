@@ -83,6 +83,27 @@ filter_missings(args...) = collect.(skipmissings(args...))
 
 remove_undef(vec) = [vec[i] for i = 1:length(vec) if isassigned(vec, i)] # Remove any undef
 
+# Calculate summary statistics. We don't take hepdata because it doesn't have any missing values
+function summary_stats(filtered_intero, nomissing, pp_population_stats, hepdata)
+    # Create a dataframe showing participants with any columns containing missing data. These pps are excluded.
+    global missingdf = filter(row -> any(ismissing, row) && row.Participant in hepdata.Participant, filtered_intero)
+    cols_to_remove = [col for col in names(missingdf) if all(!ismissing, missingdf[!, col])] # Remove columns with no missing data, for visualisation purposes
+    select!(missingdf, :Participant, Not(cols_to_remove))
+
+    included_participants = unique(nomissing.Participant)
+    excluded_participants = unique(missingdf.Participant)
+
+    filter!(row -> row.Participant in included_participants, pp_population_stats)
+    age_vec = skipmissing(pp_population_stats.Age)
+
+    agestats = AgeStats(minimum(age_vec), maximum(age_vec), mean(age_vec), std(age_vec), pp_population_stats.Age)
+    genderstats = Dict(counter(pp_population_stats.Gender))
+    global ppstats = PPStats(included_participants, excluded_participants, agestats, genderstats)
+
+    println("Beginning analysis with $(nrow(nomissing)) time points from $(ppstats.included_count) participants.")
+    println("Excluded $(ppstats.excluded_count) participants: $(join(ppstats.excluded, ", "))")
+end
+
 function load_csvs(first_n::Union{Int, Nothing} = nothing)
     csvs = filter(file -> contains(file, "data_hep"), readdir("data", join = true))
     hepdata = reduce(
@@ -124,27 +145,6 @@ function load_csvs(first_n::Union{Int, Nothing} = nothing)
     else
         return nomissing
     end
-end
-
-# Calculate summary statistics. We don't take hepdata because it doesn't have any missing values
-function summary_stats(filtered_intero, nomissing, pp_population_stats, hepdata)
-    # Create a dataframe showing participants with any columns containing missing data. These pps are excluded.
-    global missingdf = filter(row -> any(ismissing, row) && row.Participant in hepdata.Participant, filtered_intero)
-    cols_to_remove = [col for col in names(missingdf) if all(!ismissing, missingdf[!, col])] # Remove columns with no missing data, for visualisation purposes
-    select!(missingdf, :Participant, Not(cols_to_remove))
-
-    included_participants = unique(nomissing.Participant)
-    excluded_participants = unique(missingdf.Participant)
-
-    filter!(row -> row.Participant in included_participants, pp_population_stats)
-    age_vec = skipmissing(pp_population_stats.Age)
-
-    agestats = AgeStats(minimum(age_vec), maximum(age_vec), mean(age_vec), std(age_vec), pp_population_stats.Age)
-    genderstats = Dict(counter(pp_population_stats.Gender))
-    global ppstats = PPStats(included_participants, excluded_participants, agestats, genderstats)
-
-    println("Beginning analysis with $(nrow(nomissing)) time points from $(ppstats.included_count) participants.")
-    println("Excluded $(ppstats.excluded_count) participants: $(join(ppstats.excluded, ", "))")
 end
 
 function epoch_stats(df)
@@ -236,7 +236,7 @@ function pairwise_correlation(
             pvalue = HypothesisTests.pvalue(cor)
             (ci_lower, ci_higher) = HypothesisTests.confint(cor)
 
-            if (e === nothing) # If sliding window
+            if (e === nothing) # If window size
 
                 output[prealloc_i[]] = CorTestResult(
                     Parameter1 = Parameter1,
@@ -278,7 +278,7 @@ function pairwise_correlation(
     end
 end
 
-function sliding_window_analysis(df, conditions)
+function window_size_analysis(df, conditions)
     # 0.05 means 0.05 each side of the time point (total width 0.1)
     # Times are fractions of seconds, so 0.05 = 50ms
     window_widths = range(start = 0.05, stop = 0.2, step = 0.025)
@@ -380,7 +380,7 @@ function main(; do_sliding_window, do_epoch_analysis)
     conditions = [:HCT, :RestingState]
 
     if (do_sliding_window)
-        sliding_window_analysis(df, conditions)
+        window_size_analysis(df, conditions)
         CSV.write("correlations_julia.csv", window_df)
         significance_analysis()
     end
