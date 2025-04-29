@@ -26,6 +26,10 @@ library(ggtext)
 library(ggridges)
 library(viridis)
 library(datawizard)
+library(extrafont)
+
+# font_import()
+loadfonts(device = "win")
 
 ## Utility functions
 
@@ -109,6 +113,7 @@ make_corr_plot <- function(df, window) {
         theme(
             plot.title = element_text(face = "bold", hjust = 0.5),
             axis.title.y = element_text(face = "italic"),
+            panel.spacing.x = unit(0.5, "lines"),
             strip.clip = "off"
         ) +
         labs(
@@ -120,15 +125,16 @@ make_corr_plot <- function(df, window) {
 
     if (window >= (0.2 - 0.001) && window <= (0.2 + 0.001)) {
         plot <- plot + theme(
+            panel.spacing.y = unit(1.3, "lines")
+        )
+    }
+
+    if (window >= (0.175 - 0.001) && window <= (0.175 + 0.001)) {
+        plot <- plot + theme(
             panel.spacing.y = unit(1.2, "lines")
         )
     }
 
-    if (window >= (0.05 - 0.001) && window <= (0.05 + 0.001)) {
-        plot <- plot + theme(
-            panel.spacing.x = unit(1.3, "lines")
-        )
-    }
 
     plot
 }
@@ -145,7 +151,7 @@ patched <- plots |>
     patchwork::plot_layout(guides = "collect") +
     plot_annotation(tag_levels = "A")
 
-ggsave(file = "patched_plot.png", plot = patched, width = 18, height = 65, dpi = 320, limitsize = FALSE)
+ggsave(file = "patched_plot.png", plot = patched, width = 20, height = 25, dpi = 320, limitsize = FALSE)
 ```
 
 ### Fig 2. Significance histogram
@@ -271,6 +277,7 @@ for (w in seq_along(windows)) {
         scale_x_continuous(breaks = c(-0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8)) +
         theme_bw() +
         theme(
+            text = element_text(),
             plot.title = element_text(face = "bold"),
             plot.subtitle = ggtext::element_markdown(),
             axis.title.x = ggtext::element_markdown()
@@ -335,7 +342,7 @@ make_epoch_graph <- function(df, region) {
             text = element_text(size = 20),
             legend.text = element_text(size = 11),
             axis.title.y = element_text(face = "italic"),
-            plot.title = ggtext::element_markdown()
+            plot.title = element_text(face = "bold", hjust = 0.5),
         ) +
         labs(
             x = "Epochs",
@@ -343,11 +350,11 @@ make_epoch_graph <- function(df, region) {
             title = pretty_region(region)
         )
 
-    if (region == "after_late" || region == "after_early") {
-        plot <- plot + theme(
-            panel.spacing.y = unit(1.3, "lines")
-        )
-    }
+    #  if (region == "after_late" || region == "after_early") {
+    plot <- plot + theme(
+        panel.spacing.y = unit(2, "lines")
+    )
+    # }
 
     plot
 }
@@ -361,7 +368,7 @@ patched <- wrap_plots(plots, ncol = 2) +
     plot_annotation(tag_levels = "A") +
     patchwork::plot_layout(guides = "collect")
 
-ggsave(file = "patched_epoch_plot.png", plot = patched, width = 30, height = 100, dpi = 320, limitsize = FALSE)
+ggsave(file = "patched_epoch_plot.png", plot = patched, width = 30, height = 35, dpi = 320, limitsize = FALSE)
 ```
 
 ## Grand average (unused)

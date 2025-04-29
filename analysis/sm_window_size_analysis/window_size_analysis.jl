@@ -308,7 +308,7 @@ function window_size_analysis(df, conditions)
 
                 pairwise_correlation(means_medians, interoceptive, output, prealloc_i; i = i, c = c, w = w)
 
-                println("Thread $(Threads.threadid()): $i, $w, $c")
+                #println("Thread $(Threads.threadid()): $i, $w, $c")
             end
         end
     end
@@ -346,7 +346,7 @@ function epoch_analysis(df, conditions)
 
                 pairwise_correlation(means_medians, interoceptive, output, prealloc_i; e = e, c = c, name = name)
 
-                println("Thread $(Threads.threadid()): $e, $c, $name")
+                #println("Thread $(Threads.threadid()): $e, $c, $name")
             end
         end
     end
