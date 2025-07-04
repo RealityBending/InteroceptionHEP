@@ -323,7 +323,7 @@ function epoch_analysis(df, conditions)
 
     before = df[(df.time .>= -0.225 .&& df.time .< -0.025), :]
     after_early = df[(df.time .>= 0.025 .&& df.time .< 0.225), :]
-    after_late = df[(df.time .>= 0.410 .&& df.time .< 0.620), :]
+    after_late = df[(df.time .>= 0.410 .&& df.time .< 0.610), :]
 
     dfs = (before = before, after_early = after_early, after_late = after_late)
 
